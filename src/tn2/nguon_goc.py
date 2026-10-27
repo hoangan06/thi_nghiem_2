@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import math
 import os
 import platform
 import sys
@@ -63,6 +64,17 @@ def thong_tin_moi_truong() -> dict[str, Any]:
         tt["tokenizers"] = tokenizers.__version__
     except ImportError:
         pass
+    # Kernel của lớp Gated DeltaNet (Qwen3.5): có thì transformers dùng, không có thì tự chuyển sang bản PyTorch
+    # thuần (chậm hơn, cùng kết quả về mặt toán). Ghi lại để biết backend thực dùng (báo cáo kết quả bước 1, mục 7).
+    import importlib.metadata as _md
+    # Gói `kernels` (kernel từ HF Hub) không được cài; có nó thì transformers bọc thêm một lớp quanh các hàm của
+    # lớp DeltaNet (đối chiếu code bước 3, R1 P2). Runbook đặt USE_HUB_KERNELS=NO; ghi cả hai để kiểm.
+    tt["bien_USE_HUB_KERNELS"] = os.environ.get("USE_HUB_KERNELS")
+    for goi in ("flash-linear-attention", "causal-conv1d", "flash_attn", "kernels"):
+        try:
+            tt[f"goi_{goi}"] = _md.version(goi)
+        except _md.PackageNotFoundError:
+            tt[f"goi_{goi}"] = None
     return tt
 
 
@@ -78,11 +90,22 @@ def thong_tin_mo_hinh(model, tok, dac_ta) -> dict[str, Any]:
     }
 
 
+def _bo_nan(obj: Any) -> Any:
+    """Thay float NaN/±inf bằng None (JSON chuẩn không có NaN; sửa sau bước 1, báo cáo kết quả mục 6.1)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _bo_nan(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_bo_nan(v) for v in obj]
+    return obj
+
+
 def ghi_json(duong: str | Path, obj: Any) -> None:
     duong = Path(duong)
     duong.parent.mkdir(parents=True, exist_ok=True)
     with open(duong, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
+        json.dump(_bo_nan(obj), f, ensure_ascii=False, indent=2, allow_nan=False)
         f.write("\n")
 
 

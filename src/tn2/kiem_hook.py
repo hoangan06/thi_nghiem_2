@@ -171,6 +171,10 @@ class DauVaoKiemHook:
     cau_hoi_nhieu_a: list[str] | None = None   # tập đo nhiễu ở α = 0; None → dùng lại cau_hoi_a
     cau_hoi_nhieu_b: list[str] | None = None
     co_lo: int | None = None                    # cỡ lô khi đo nhiễu; None → len(cau_hoi_a) (giống lô kiểm)
+    # Chẩn đoán thêm ở bước 3 (rà soát code bước 3, R1 nhận xét 2; Ân duyệt Q5): chạy lại lượt không hook lần hai
+    # và so với lần một. Nếu hai lượt không hook khác nhau thì đường nền không tất định: khi (ii) trượt, chưa thể quy
+    # riêng độ lệch cho hook (cũng chưa loại trừ lỗi hook). Không vào tiêu chí. Mặc định tắt (bước 1 không đổi).
+    lap_lai_khong_hook: bool = False
 
 
 def _do_nhieu(model, tok, dac_ta, dv: DauVaoKiemHook, kieu: str, cau: list[str], co_lo: int) -> list[dict]:
@@ -203,7 +207,7 @@ def chay_kiem_hook(model, tok, dac_ta: DacTaMoHinh, dv: DauVaoKiemHook, bao_tien
                                         "he_so_nguong": HE_SO_NGUONG, "he_so_kiem_am": HE_SO_KIEM_AM,
                                         "eos_ids": list(dv.eos_ids),
                                         "dtype": str(next(model.parameters()).dtype)},
-                           "ii": [], "nhieu": [], "i": [], "iii": []}
+                           "ii": [], "nhieu": [], "i": [], "iii": [], "khong_hook_lap_lai": []}
     for kieu, cau, cau_nhieu in (("a", dv.cau_hoi_a, nhieu_a), ("b", dv.cau_hoi_b, nhieu_b)):
         ket["nhieu"] += _do_nhieu(model, tok, dac_ta, dv, kieu, cau_nhieu, co_lo)
         if bao_tien_do:
@@ -211,6 +215,12 @@ def chay_kiem_hook(model, tok, dac_ta: DacTaMoHinh, dv: DauVaoKiemHook, bao_tien
         enc = ma_hoa(tok, cau, dac_ta)
         k = enc.so_token_khoi
         g_khong = sinh_tham_lam(model, tok, enc, dv.max_new_tokens, dv.eos_ids, None, lay_logit=True)
+        if dv.lap_lai_khong_hook:
+            g_lai = sinh_tham_lam(model, tok, enc, dv.max_new_tokens, dv.eos_ids, None, lay_logit=True)
+            ket["khong_hook_lap_lai"].append({
+                "kieu": kieu, "cung_token": bool(torch.equal(g_khong.token_day_du, g_lai.token_day_du)),
+                "cung_logit": bool(g_khong.logits.shape == g_lai.logits.shape
+                                   and torch.equal(g_khong.logits, g_lai.logits))})
         for lop in dv.lop:
             # (ii) α = 0 so với không hook: khớp tuyệt đối (token và logit), ở từng lớp.
             ct0 = can_thiep_chinh(lop, dv.r_hat[lop], dv.s[lop], 0.0, kieu, 1, k)
@@ -267,6 +277,9 @@ def chay_kiem_hook(model, tok, dac_ta: DacTaMoHinh, dv: DauVaoKiemHook, bao_tien
         "ti_so_kiem_am_tren_nhieu": {k: (v["lech_lon_nhat"] / nhieu if nhieu > 0 else None) for k, v in kiem_am.items()},
         "thang_logit_nhieu": max(r["thang_logit"] for r in ket["nhieu"]),
         "thang_logit_alpha": max(r["thang_logit"] for r in ket["i"]),
+        # chẩn đoán Q5: None khi không chạy; True khi hai lượt không hook khớp tuyệt đối ở mọi kiểu
+        "khong_hook_lap_lai_khop": (all(r["cung_token"] and r["cung_logit"] for r in ket["khong_hook_lap_lai"])
+                                    if ket["khong_hook_lap_lai"] else None),
     }
     tong["dat_tat_ca"] = bool(tong["ii_dat"] and tong["i_dat"] and tong["iii_dat"] and tong["kiem_am_dat"])
     # Luật ba mức cho (i), (iii) (chốt 27/10, phương án (a) của mục C1): "dat" | "can_xem" | "khong_dat".

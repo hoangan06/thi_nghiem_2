@@ -13,6 +13,19 @@ Hiện có: **bước 1 của trình tự chạy** — kiểm pipeline trên Lla
 
 Cách chạy trên GPU thuê: `docs/RUNBOOK_BUOC_1.md`. Cấu trúc code và kế hoạch cho các bước sau: `docs/CAU_TRUC_CODE.md`.
 
+Đã viết, chưa chạy: **bước 3** — với Qwen3.5-9B và Gemma 4 12B: nạp và kiểm, dựng hướng và s_ℓ, bản thu nhỏ phần 2,
+đo tốc độ (`--mo_hinh_dac_ta qwen35_9b | gemma4_12b`).
+
+| Lệnh | Việc | Ghi ra |
+|---|---|---|
+| `python scripts/buoc3_kiem_truoc.py` | khối 9 token sau câu hỏi, vị trí lấy −5, token kết thúc, layer_types, greedy (không nạp trọng số) | `results/buoc3/<mô hình>/kiem_truoc_*/` |
+| `python scripts/buoc3_nap_kiem.py` | một GPU, cấu trúc lớp, bộ đếm vị trí, sinh thử, rò thinking | `…/nap_kiem_*/` |
+| `python scripts/buoc3_dung_huong.py` | chẩn đoán position_ids / đệm; dựng hướng điểm 1–8 trên 4 × 128 câu dựng (luôn truyền position_ids) | `…/dung_huong_*/` |
+| `python scripts/buoc3_kiem_hook.py --huong …` | bản thu nhỏ phần 2, bf16 rồi float32 | `…/kiem_hook_*/` |
+| `python scripts/buoc3_do_toc_do.py --huong …` | câu/giờ, bộ nhớ đỉnh theo cỡ lô | `…/toc_do_*/` |
+
+Cách chạy: `docs/RUNBOOK_BUOC_3.md`.
+
 ## Test (CPU, không tải gì từ mạng)
 
 ```bash
@@ -21,7 +34,7 @@ python -m pytest -q -p no:cacheprovider tests/
 ```
 
 Test dùng mô hình nhỏ khởi tạo ngẫu nhiên cùng kiến trúc (Llama, Qwen3.5, Gemma 4) và tokenizer đồ chơi có id
-đặc biệt trùng Llama-3. Chúng kiểm logic của code, không thay được lượt chạy trên mô hình thật.
+đặc biệt trùng id thật của Llama-3, Qwen3.5 và Gemma 4. Chúng kiểm logic của code, không thay được lượt chạy trên mô hình thật.
 
 ## Quy ước
 

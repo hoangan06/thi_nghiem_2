@@ -178,3 +178,129 @@ def tao_gemma4_nho(vocab: int, dtype=torch.float32, seed: int = 0):
 def doc_cau(ten: str, n: int | None = None) -> list[str]:
     ds = [json.loads(d)["instruction"] for d in (DU_LIEU / f"{ten}.jsonl").read_text(encoding="utf-8").splitlines() if d.strip()]
     return ds[:n] if n else ds
+
+
+# ───────────────────────── Bước 3: tokenizer đồ chơi đặt token đặc biệt đúng id thật ─────────────────────────
+DU_LIEU_DUNG = GOC / "data" / "dung_huong"
+
+# Template kiểu Gemma 4 rút gọn: thinking tắt → khối "<|channel>thought\n<channel|>" rỗng ở cuối.
+TEMPLATE_GEMMA = (
+    "{{ bos_token }}{% for message in messages %}<|turn>{{ 'model' if message['role'] == 'assistant' else message['role'] }}\n"
+    "{{ message['content'] | trim }}<turn|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|turn>model\n"
+    "{% if not enable_thinking %}<|channel>thought\n<channel|>{% endif %}{% endif %}"
+)
+
+
+def _tu_tap_dung() -> list[str]:
+    tu = set()
+    for f in DU_LIEU_DUNG.glob("*.jsonl"):
+        for d in f.read_text(encoding="utf-8").splitlines():
+            if d.strip():
+                tu.update(re.findall(r"\w+|[^\w\s]", json.loads(d)["text"]))
+    return sorted(tu | set(_tu_trong_du_lieu()))
+
+
+def _tok_do_choi(so_tu: int, dac_biet: dict[int, str], them_thuong: dict[int, str], eos: str, pad: str,
+                 bos: str | None, template: str):
+    """WordLevel đồ chơi: từ của dữ liệu ở các id thấp; token đặc biệt và token thêm đặt ĐÚNG id cho trước."""
+    from tokenizers import AddedToken, Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    co_dinh = {**dac_biet, **them_thuong}
+    vocab: dict[str, int] = {}
+    tu = [t for t in _tu_tap_dung() if t not in co_dinh.values()]
+    i = 0
+    for t in ["[UNK]"] + tu:
+        while i in co_dinh:
+            i += 1
+        vocab[t] = i
+        i += 1
+    for j, t in co_dinh.items():
+        vocab[t] = j
+    while len(vocab) < so_tu:
+        while i in co_dinh:
+            i += 1
+        vocab[f"<f{i}>"] = i
+        i += 1
+    tk = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+    tk.pre_tokenizer = pre_tokenizers.Whitespace()
+    tk.add_special_tokens([AddedToken(t, special=True, normalized=False) for t in dac_biet.values()])
+    tk.add_tokens([AddedToken(t, normalized=False, special=False) for t in them_thuong.values()])
+    kw = {"bos_token": bos} if bos else {}
+    tok = PreTrainedTokenizerFast(tokenizer_object=tk, eos_token=eos, pad_token=pad, unk_token="[UNK]", **kw)
+    tok.chat_template = template
+    tok.padding_side = "left"
+    return tok
+
+
+def tao_tok_qwen35_that():
+    return _tok_do_choi(248320, {248044: "<|endoftext|>", 248045: "<|im_start|>", 248046: "<|im_end|>",
+                                 248068: "<think>", 248069: "</think>"},
+                        {198: "\n", 271: "\n\n"}, eos="<|im_end|>", pad="<|endoftext|>", bos=None,
+                        template=TEMPLATE_QWEN)
+
+
+def tao_tok_gemma4_that():
+    return _tok_do_choi(262144, {0: "<pad>", 1: "<eos>", 2: "<bos>", 50: "<|tool_response>", 105: "<|turn>",
+                                 106: "<turn|>", 100: "<|channel>", 101: "<channel|>"},
+                        {107: "\n"}, eos="<eos>", pad="<pad>", bos="<bos>", template=TEMPLATE_GEMMA)
+
+
+def tao_qwen35_vlm_nho(seed: int = 0):
+    """Qwen3_5ForConditionalGeneration nhỏ, 32 lớp, full attention ở 3, 7, …, 31 (như Qwen3.5-9B)."""
+    from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
+
+    torch.manual_seed(seed)
+    lt = ["full_attention" if i % 4 == 3 else "linear_attention" for i in range(32)]
+    cfg = Qwen3_5Config(text_config=dict(vocab_size=248320, hidden_size=32, intermediate_size=64, num_hidden_layers=32,
+                                         num_attention_heads=4, num_key_value_heads=2, head_dim=8,
+                                         linear_num_key_heads=2, linear_num_value_heads=2, linear_key_head_dim=8,
+                                         linear_value_head_dim=8, layer_types=lt, initializer_range=0.2,
+                                         eos_token_id=248046, pad_token_id=248044),
+                        vision_config=dict(depth=1, hidden_size=16, intermediate_size=32, num_heads=2, out_hidden_size=32))
+    return Qwen3_5ForConditionalGeneration(cfg).eval()
+
+
+def tao_gemma4_vlm_nho(seed: int = 0):
+    """Gemma4UnifiedForConditionalGeneration nhỏ, 48 lớp, full attention ở 5, 11, …, 47 (như Gemma 4 12B)."""
+    from transformers import Gemma4UnifiedConfig, Gemma4UnifiedForConditionalGeneration
+
+    torch.manual_seed(seed)
+    lt = ["full_attention" if i % 6 == 5 else "sliding_attention" for i in range(48)]
+    tc = dict(vocab_size=262144, hidden_size=32, intermediate_size=64, num_hidden_layers=48, num_attention_heads=2,
+              num_key_value_heads=1, head_dim=16, sliding_window=8, layer_types=lt, initializer_range=0.2,
+              pad_token_id=0, eos_token_id=1, bos_token_id=2)
+    cfg = Gemma4UnifiedConfig(text_config=tc, image_token_id=262000, video_token_id=262001, audio_token_id=262002,
+                              boi_token_id=262003, eoi_token_id=262004, boa_token_id=262005, eoa_token_index=262006)
+    m = Gemma4UnifiedForConditionalGeneration(cfg).eval()
+    with torch.no_grad():
+        for i, l in enumerate(m.model.language_model.layers):      # layer_scalar khác 1 để phép kiểm có nghĩa
+            l.layer_scalar.fill_(0.9 if i % 2 == 0 else 1.1)
+    return m
+
+
+@pytest.fixture(scope="session")
+def tok_qwen35():
+    return tao_tok_qwen35_that()
+
+
+@pytest.fixture(scope="session")
+def tok_gemma4():
+    return tao_tok_gemma4_that()
+
+
+@pytest.fixture(scope="session")
+def thu_muc_qwen35(tmp_path_factory, tok_qwen35):
+    d = tmp_path_factory.mktemp("qwen35_vlm")
+    tao_qwen35_vlm_nho().save_pretrained(d)
+    tok_qwen35.save_pretrained(d)
+    return d
+
+
+@pytest.fixture(scope="session")
+def thu_muc_gemma4(tmp_path_factory, tok_gemma4):
+    d = tmp_path_factory.mktemp("gemma4_vlm")
+    tao_gemma4_vlm_nho().save_pretrained(d)
+    tok_gemma4.save_pretrained(d)
+    return d

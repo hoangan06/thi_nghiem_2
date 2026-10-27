@@ -78,3 +78,59 @@ def trung_binh_kich_hoat(model, tok, dac_ta: DacTaMoHinh, cau_hoi: Sequence[str]
         for h in handles:
             h.remove()
     return KetQuaKichHoat(vi_tri, lop, diem, (tong / n).cpu(), (tong_do_lon / n).cpu(), n)
+
+
+def vi_tri_theo_mat_na(attention_mask: torch.Tensor) -> torch.Tensor:
+    """position_ids như generate của transformers 5.17 tính cho lô đệm trái: cumsum(mask) − 1, vị trí đệm = 0."""
+    p = attention_mask.long().cumsum(-1) - 1
+    return p.masked_fill(attention_mask == 0, 0)
+
+
+@torch.no_grad()
+def kich_hoat_tung_cau(model, tok, dac_ta: DacTaMoHinh, cau_hoi: Sequence[str], vi_tri: Sequence[int],
+                       lop: Sequence[int] | None = None, co_lo: int = 32,
+                       position_ids_theo_mat_na: bool = False) -> torch.Tensor:
+    """Kích hoạt ở ĐẦU RA khối decoder của từng câu: tensor [N, P, nL, d] ở kiểu số của mô hình, trên CPU.
+
+    Dùng cho bước 3 (Nhap, Dựng hướng): lưu kích hoạt từng câu ở vị trí lấy để làm bootstrap của C3 (mục 7.3)
+    và phép chia đôi (điểm 6) mà không phải chạy lại GPU. Trung bình tính từ tensor này ở float64 trùng với
+    trung_binh_kich_hoat (có test).
+
+    position_ids_theo_mat_na: False = như trung_binh_kich_hoat (không truyền position_ids; với lô đệm trái vị trí
+    RoPE đếm cả token đệm); True = truyền position_ids = cumsum(mask) − 1 như generate. Pipeline chính LUÔN dùng
+    True (Ân duyệt Q1, 27/10/2026; tn2.buoc3.dung_huong mặc định True); False chỉ dùng để đối chiếu với bước 1 và
+    trong phép chẩn đoán tn2.buoc3.nap_kiem.do_position_ids.
+    """
+    if len(cau_hoi) == 0:
+        raise ValueError("Không có câu nào.")
+    if any(v >= 0 for v in vi_tri):
+        raise ValueError("Vị trí phải là chỉ số âm (đếm từ cuối lời nhắc).")
+    cac_lop = tim_cac_lop(model)
+    lop = list(range(len(cac_lop))) if lop is None else [int(x) for x in lop]
+    vi_tri = [int(v) for v in vi_tri]
+    thiet_bi = thiet_bi_cua(model)
+    tam: dict[int, torch.Tensor] = {}
+
+    def tao_hook(j: int):
+        def hook(module, args, output):
+            h = output[0] if isinstance(output, tuple) else output
+            tam[j] = h[:, vi_tri, :].detach().to("cpu")
+        return hook
+
+    phan = []
+    handles = [cac_lop[l].register_forward_hook(tao_hook(j)) for j, l in enumerate(lop)]
+    try:
+        for a, b in chia_lo(len(cau_hoi), co_lo):
+            enc = ma_hoa(tok, cau_hoi[a:b], dac_ta).den(thiet_bi)
+            if -min(vi_tri) > enc.do_dai_dem:
+                raise ValueError("Vị trí âm vượt quá độ dài lời nhắc.")
+            kw = {}
+            if position_ids_theo_mat_na:
+                kw["position_ids"] = vi_tri_theo_mat_na(enc.attention_mask)
+            tam.clear()
+            model(input_ids=enc.input_ids, attention_mask=enc.attention_mask, use_cache=False, **kw)
+            phan.append(torch.stack([tam[j] for j in range(len(lop))], dim=2))     # [B, P, nL, d]
+    finally:
+        for h in handles:
+            h.remove()
+    return torch.cat(phan, dim=0)

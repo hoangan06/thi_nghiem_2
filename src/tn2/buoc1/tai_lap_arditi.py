@@ -255,10 +255,20 @@ def chan_doan(ung_vien: torch.Tensor, bang: list[dict], chon: dict, thu_muc_tac_
         md_tg = torch.load(f_md, map_location="cpu")
         if tuple(md_tg.shape) == tuple(ung_vien.shape):
             cs = cosine(ung_vien, md_tg)          # [5, L]
+            # Sửa sau bước 1 (báo cáo kết quả bước 1, mục 6.1): cosine với vector độ lớn 0 không xác định
+            # (ở Llama-3, đầu vào khối 0 tại các token khuôn giống nhau ở mọi câu nên hiệu trung bình bằng 0 đúng).
+            # Tóm tắt chỉ tính trên các ô có hai độ lớn > 0; ô bị bỏ ghi null, không dùng epsilon.
+            hop_le = (ung_vien.norm(dim=-1) > 0) & (md_tg.norm(dim=-1) > 0) & torch.isfinite(cs)
+            cs_hl = cs[hop_le]
             ra["cosine_voi_mean_diffs_tac_gia"] = {
-                "nho_nhat": float(cs.min()), "trung_vi": float(cs.median()), "lon_nhat": float(cs.max()),
-                "tai_ung_vien_chon": float(cs[chon["vi_tri"], chon["lop"]]),
-                "theo_vi_tri_lop": cs.tolist()}
+                "nho_nhat": float(cs_hl.min()) if cs_hl.numel() else None,
+                "trung_vi": float(cs_hl.median()) if cs_hl.numel() else None,
+                "lon_nhat": float(cs_hl.max()) if cs_hl.numel() else None,
+                "so_o_hop_le": int(hop_le.sum()), "so_o_bo_do_lon_0": int((~hop_le).sum()),
+                "tai_ung_vien_chon": (float(cs[chon["vi_tri"], chon["lop"]])
+                                      if bool(hop_le[chon["vi_tri"], chon["lop"]]) else None),
+                "theo_vi_tri_lop": [[(float(x) if ok else None) for x, ok in zip(hang, hang_ok)]
+                                    for hang, hang_ok in zip(cs.tolist(), hop_le.tolist())]}
             ra["ti_so_do_lon_ta_tren_tac_gia_tai_ung_vien_chon"] = float(
                 ung_vien[chon["vi_tri"], chon["lop"]].norm() / md_tg[chon["vi_tri"], chon["lop"]].norm())
         else:

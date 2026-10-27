@@ -61,6 +61,10 @@ def test_script_hai_kieu_so(tok_llama, tmp_path, monkeypatch):
 
     monkeypatch.setattr(S, "nap_mo_hinh",
                         lambda *a, dtype=torch.bfloat16, **k: (tao_llama_nho(dtype=dtype), tok_llama))
+    # Mô hình nhỏ ở CPU: phép kiểm thiết bị nhận can_gpu=False tường minh, để test không phụ thuộc máy có CUDA
+    # (đối chiếu code bước 3, R1 P1). Script bước 1 khi chạy thật vẫn đòi GPU (không đổi).
+    from tn2.mo_hinh import phan_bo_thiet_bi as pb_goc
+    monkeypatch.setattr(S, "phan_bo_thiet_bi", lambda m, can_gpu=None: pb_goc(m, can_gpu=False))
     rc = S.main(["--ra", str(tmp_path), "--ten_luot", "thu", "--so_cau", "2", "--so_cau_nhieu", "4",
                  "--max_new_tokens", "6", "--gioi_han_dung_huong", "4"])
     t = tmp_path / "thu"
