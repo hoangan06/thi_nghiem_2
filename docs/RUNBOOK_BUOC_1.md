@@ -18,7 +18,7 @@ khoảng 1,5–2 giờ máy (con số ước, chưa đo).
 
 | Tiêu chí | Giá trị |
 |---|---|
-| GPU | 1 GPU, **ưu tiên 80 GB** (A100 80GB, H100 80GB); tối thiểu 48 GB (L40S, A6000). Phần 2 nạp lại mô hình ở float32 (≈ 32 GB), ép lên một GPU |
+| GPU | 1 GPU 48 GB (L40S, A6000) hoặc lớn hơn. Lượt 27/10/2026 đã chạy đạt trên RTX A6000 48 GB với cấu hình hiện tại (phần 2 nạp lại mô hình ở float32, ≈ 32 GB, ép lên một GPU); đây không phải bảo đảm cho mọi kích thước lô |
 | Đĩa | ≥ 60 GB |
 | Ảnh | Ubuntu có CUDA ≥ 12.8, Python 3.12 |
 | Mạng | Direct SSH |
@@ -41,7 +41,7 @@ pip install -U pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128     # ⏱ 3–8 phút
 pip install -r requirements.txt
 python -c "import torch,transformers,tokenizers; print(torch.__version__, transformers.__version__, tokenizers.__version__, torch.cuda.get_device_name(0))"
-python -m pytest -q -p no:cacheprovider tests/          # ⏱ 2–4 phút; phải: 50 passed
+python -m pytest -q -p no:cacheprovider tests/ 2>&1 | tee -a /workspace/log_b1.txt; echo "MÃ THOÁT: ${PIPESTATUS[0]}"     # ⏱ 2–4 phút; phải: 50 passed
 ```
 Phải thấy `5.17.0` và `0.23.2`, tên GPU, và `50 passed`. (Bộ test đã chạy xanh trên CPU với torch 2.14.1 và
 2.11.0; dòng `50 passed` trên máy thuê xác nhận lại với đúng bản torch đã cài.) Có test hỏng thì dừng, chép log về, không chạy tiếp.

@@ -74,3 +74,17 @@ thật. Phần 1 giữ đúng cách của tác giả. Luật cho bước 3, khi 
 dựng hướng, tính trung bình kích hoạt ở vị trí lấy, mọi lớp, hai cách (có và không có
 `position_ids = cumsum(mask) − 1`). Lệch ở mức làm tròn (sai khác tương đối cỡ nhiễu kiểu số, cosine ≈ 1) → giữ
 cách hiện tại; lệch lớn hơn → thêm `position_ids` cho pipeline chính và ghi lại.
+
+Việc thêm cho bước 3, chốt 27/10 sau rà soát kết quả bước 1 (chi tiết trong báo cáo kết quả bước 1, mục 7–8):
+
+- `mo_hinh.phan_bo_thiet_bi`: kiểm thiết bị của mọi tensor tham gia forward, gồm cả `parameters()` và
+  `buffers()` (`layer_scalar` của Gemma 4 là tham số hay buffer: kiểm cả hai), báo tên tensor lệch; bản đồ thiết bị rỗng không còn là đạt.
+- Tóm tắt cosine trong `chan_doan`: bỏ ô có độ lớn 0, ghi số ô bị bỏ, xuất `null` thay cho `NaN`.
+- Bản thu nhỏ phần 2 (`buoc3_kiem_hook.py`): bf16 và float32 như bước 1; quy mô như bước 1 (8 câu mỗi kiểu,
+  64 token, α = 0,4, nhiễu trên 128 câu); câu từ D_harmless_build / D_harm_build tiếng Anh; hướng tiếng Anh của
+  bước 3; lớp Qwen3.5-9B 8, 15, 24 và Gemma 4 12B 12, 23, 36 (lớp giữa là full attention, chạy kiểm âm). Không
+  dùng `lop_mac_dinh()` của bước 1 cho hai mô hình này.
+- Tách và khoá hai vị trí khi nạp: token lấy kích hoạt, và toàn bộ khối can thiệp sau câu hỏi (kể cả khối
+  thinking rỗng); `so_token_khoi_du_kien` hiện là `None`.
+- Dựng hướng đủ điểm 1–8 của Nhap, gồm chia đôi và cosine giữa hai vị trí lấy kích hoạt.
+- Dữ liệu D_harm_build, D_harmless_build vào `data/` kèm SHA và nguồn; kiểm trùng ba cặp tập.
