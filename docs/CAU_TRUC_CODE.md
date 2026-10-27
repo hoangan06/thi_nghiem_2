@@ -24,6 +24,7 @@ src/tn2/
   huong.py        hiệu trung bình, chuẩn hoá, cosine, chia đôi có seed
   can_thiep.py    hook: cộng vector hoặc chiếu bỏ; vùng = khối K token + token sinh (phương án 1 / 3) hoặc mọi vị trí
   sinh.py         sinh greedy theo lô, mọi tham số giải mã đặt rõ; hai cách giải mã ("đến eos", "như Arditi")
+                  (suppress_tokens=[] tường minh từ 27/10: generation_config của Gemma 4 12B chặn <image|>, <audio|>)
   diem.py         điểm từ chối theo logit, KL, so khớp chuỗi (đúng công thức của tác giả)
   kiem_hook.py    phần 2 của kiểm pipeline: (i), (ii), (iii), kiểm âm; dùng lại ở bước 3 cho hai mô hình chính
   nguon_goc.py    meta của lượt chạy, ghi JSON/JSONL, thư mục kết quả mới
@@ -56,7 +57,7 @@ scripts/
   buoc3_kiem_hook.py    bản thu nhỏ phần 2 (bf16 rồi float32), lớp theo đặc tả; lượt không hook lặp lại (chẩn đoán)
   buoc3_do_toc_do.py    tốc độ và bộ nhớ: lô 16, 32, 64, 128; nền và can thiệp
 docs/RUNBOOK_BUOC_3.md      trình tự chạy trên máy thuê
-tests/test_buoc3.py         30 test (tổng 80 test)
+tests/test_buoc3.py         31 test (tổng 81 test)
 data/dung_huong/            D_harm_build, D_harmless_build, en và vi (xem data/NGUON.md)
 ```
 

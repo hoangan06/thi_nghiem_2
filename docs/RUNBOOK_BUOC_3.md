@@ -43,7 +43,7 @@ pip install -U pip
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128     # ⏱ 3–8 phút
 pip install -r requirements.txt
 python -c "import torch,transformers;print(torch.__version__, transformers.__version__, torch.cuda.get_device_name(0))"
-CUDA_VISIBLE_DEVICES="" python -m pytest -q -p no:cacheprovider tests/ 2>&1 | tee -a /workspace/log_b3.txt; echo "MÃ THOÁT: ${PIPESTATUS[0]}"     # ⏱ 5–8 phút; phải: 80 passed
+CUDA_VISIBLE_DEVICES="" python -m pytest -q -p no:cacheprovider tests/ 2>&1 | tee -a /workspace/log_b3.txt; echo "MÃ THOÁT: ${PIPESTATUS[0]}"     # ⏱ 5–8 phút; phải: 81 passed
 ```
 Có test hỏng thì dừng, chép log về, không chạy tiếp. `CUDA_VISIBLE_DEVICES=""` chỉ áp cho tiến trình test: test
 chạy đúng như đã kiểm trên CPU, còn các lệnh ở mục 4 vẫn thấy GPU.

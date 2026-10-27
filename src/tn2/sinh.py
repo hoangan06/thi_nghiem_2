@@ -41,6 +41,11 @@ def cau_hinh_greedy(max_new_tokens: int, eos_ids: Sequence[int], pad_id: int):
         # có thể đổi token chọn khi giải mã greedy. scripts/buoc1_kiem_truoc.py in cấu hình hiệu lực cuối cùng.
         no_repeat_ngram_size=0,
         min_new_tokens=0,          # được ưu tiên hơn min_length nên không cần đặt min_length
+        # Gemma 4 12B đặt suppress_tokens = [258883, 258882] (<audio|>, <image|>) trong generation_config.json;
+        # để None thì transformers điền lại và ép logit hai token đó về −∞, không còn greedy thuần (phát hiện
+        # bởi buoc3_kiem_truoc trên tokenizer thật, 27/10/2026; Ân duyệt). [] được giữ nguyên, không chặn token nào.
+        # Llama-3 và Qwen3.5 không có trường này nên kết quả của chúng không đổi.
+        suppress_tokens=[],
         eos_token_id=[int(x) for x in eos_ids],
         pad_token_id=int(pad_id),
     )

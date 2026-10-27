@@ -404,3 +404,41 @@ def test_chan_doan_cosine_bo_o_do_lon_0(tmp_path):
     assert ra["so_o_bo_do_lon_0"] == 5 and ra["so_o_hop_le"] == 15
     assert ra["nho_nhat"] > 0.99 and ra["theo_vi_tri_lop"][0][0] is None
     NG.ghi_json(tmp_path / "c.json", ra)            # không còn NaN trong JSON
+
+
+def test_greedy_khong_bi_suppress_tokens_cua_mo_hinh(mo_hinh, tap, thu_muc_gemma4, tmp_path):
+    """Gemma 4 12B có suppress_tokens trong generation_config.json. Cấu hình hiệu lực phải là greedy thuần:
+    suppress_tokens rỗng, và sinh ra đúng như khi mô hình không có trường đó (kể cả khi token bị chặn chính là
+    token greedy sẽ chọn)."""
+    import shutil
+
+    import buoc3_kiem_truoc as KT
+    from transformers import GenerationConfig
+    from tn2.khuon import ma_hoa
+    from tn2.sinh import cau_hinh_greedy, sinh_tham_lam
+
+    model, tok = mo_hinh["gemma4"]
+    enc = ma_hoa(tok, tap.harmless_en[:2], GEMMA4_12B)
+    eos = eos_tu_mo_hinh(model, GEMMA4_12B)
+    goc = sinh_tham_lam(model, tok, enc, 4, eos)
+    chan = sorted({int(goc.token_day_du[0, 0]), int(goc.token_day_du[1, 0])})   # chặn đúng token greedy chọn
+    gc_cu = model.generation_config
+    try:
+        model.generation_config = GenerationConfig(do_sample=True, top_k=64, top_p=0.95, suppress_tokens=chan,
+                                                   eos_token_id=list(eos), pad_token_id=tok.pad_token_id)
+        hl, _ = model._prepare_generation_config(cau_hinh_greedy(4, eos, tok.pad_token_id))
+        assert hl.suppress_tokens == [] and hl.do_sample is False
+        moi = sinh_tham_lam(model, tok, ma_hoa(tok, tap.harmless_en[:2], GEMMA4_12B), 4, eos)
+        assert torch.equal(moi.token_day_du, goc.token_day_du)
+    finally:
+        model.generation_config = gc_cu
+    # Phép kiểm trước trên checkpoint có suppress_tokens như Gemma 4 12B thật: phải đạt (mã 0).
+    d = tmp_path / "gemma_suppress"
+    shutil.copytree(thu_muc_gemma4, d)
+    GenerationConfig(do_sample=True, top_k=64, top_p=0.95, suppress_tokens=[258883, 258882], bos_token_id=2,
+                     eos_token_id=[1, 106, 50], pad_token_id=0).save_pretrained(d)
+    assert KT.main(["--mo_hinh_dac_ta", "gemma4_12b", "--mo_hinh", str(d), "--ra", str(tmp_path / "ra"),
+                    "--ten_luot", "kt"]) == 0
+    k = json.loads((tmp_path / "ra" / "gemma4_12b" / "kt" / "kiem_truoc.json").read_text(encoding="utf-8"))
+    assert k["cau_hinh_sinh"]["generation_config_mo_hinh"]["suppress_tokens"] == [258883, 258882]
+    assert k["cau_hinh_sinh"]["hieu_luc"]["suppress_tokens"] == [] and k["cau_hinh_sinh"]["la_greedy_dung"]
