@@ -316,6 +316,23 @@ def test_cac_script_buoc3_chay_thong(ten, dac_ta, thu_muc_qwen35, thu_muc_gemma4
     assert h["chinh_thuc"] is False and h["position_ids_theo_mat_na"] is True   # --gioi_han → lượt thử; luôn B
     kh = torch.load(tmp_path / "ra" / dac_ta.ten / "dh" / "kich_hoat_vi_tri_lay.pt")
     assert kh["harm_vi"].shape == (6, dac_ta.so_lop, 32) and len(kh["id_harm"]) == 6
+    assert not [p for p in (tmp_path / "ra" / dac_ta.ten / "dh").iterdir() if p.name.startswith(".")]
+    # huong.pt ghi CUỐI: máy chết lúc ghi tom_tat.json thì chưa có huong.pt (rà lại pipeline 28/10/2026)
+    goc_ghi = DH.NG.ghi_json
+
+    def chet_o_tom_tat(duong, *a, **k):
+        if str(duong).endswith("tom_tat.json"):
+            raise RuntimeError("máy chết")
+        return goc_ghi(duong, *a, **k)
+    monkeypatch.setattr(DH.NG, "ghi_json", chet_o_tom_tat)
+    with pytest.raises(RuntimeError):
+        DH.main(chung + ["--ten_luot", "dh_chet", "--gioi_han", "6", "--co_lo", "4"])
+    monkeypatch.setattr(DH.NG, "ghi_json", goc_ghi)
+    assert (tmp_path / "ra" / dac_ta.ten / "dh_chet" / "kich_hoat_vi_tri_lay.pt").exists()
+    assert not (tmp_path / "ra" / dac_ta.ten / "dh_chet" / "huong.pt").exists()
+    # lượt chính thức mà không xác minh được commit (thư mục cục bộ) → dừng ngay, không có huong.pt
+    assert DH.main(chung + ["--ten_luot", "dh_ct"]) == 1
+    assert not (tmp_path / "ra" / dac_ta.ten / "dh_ct" / "huong.pt").exists()
     rc = KH.main(chung + ["--ten_luot", "kh", "--huong", str(huong), "--so_cau", "2", "--so_cau_nhieu", "32",
                           "--max_new_tokens", "6"])
     assert rc == 0
@@ -332,6 +349,18 @@ def test_cac_script_buoc3_chay_thong(ten, dac_ta, thu_muc_qwen35, thu_muc_gemma4
     assert meta["tham_so"]["lop_full_attention"] == [dac_ta.lop_kiem_hook[1]]       # lớp giữa là full attention
     assert TD.main(chung + ["--ten_luot", "td", "--huong", str(huong), "--co_lo", "2,4", "--so_cau_moi_file", "1",
                             "--max_new_tokens", "4"]) == 0
+    td = json.loads((tmp_path / "ra" / dac_ta.ten / "td" / "toc_do.json").read_text(encoding="utf-8"))
+    assert td["uoc_gio_gpu_buoc4"]["so_cau"] == 40 * 488 and td["uoc_gio_gpu_buoc4"]["het_bo_nho_hoac_khong_do"]
+    # kiểm hook đặt tên thư mục theo file hướng: hướng thử → kiem_hook_thu_… (tên được đặt trước khi nạp mô hình)
+    monkeypatch.setattr(KH, "nap_mo_hinh", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("dừng sau đặt tên")))
+    with pytest.raises(RuntimeError):
+        KH.main(chung + ["--huong", str(huong)])
+    assert [p.name.startswith("kiem_hook_thu_") for p in (tmp_path / "ra" / dac_ta.ten).iterdir()
+            if p.name.startswith("kiem_hook")] == [True]
+    monkeypatch.undo()
+    for m in (TD, DH, KH, NK):
+        monkeypatch.setattr(m, "device_map_mot_gpu", lambda: None)
+        monkeypatch.setattr(m, "phan_bo_thiet_bi", pb_ghi)
     sai = KH.main(chung + ["--ten_luot", "kh2", "--huong", str(huong), "--mo_hinh_dac_ta",
                            ("gemma4_12b" if ten == "qwen35" else "qwen35_9b")])
     assert sai == 1                                              # file hướng của mô hình khác → dừng
@@ -442,3 +471,13 @@ def test_greedy_khong_bi_suppress_tokens_cua_mo_hinh(mo_hinh, tap, thu_muc_gemma
     k = json.loads((tmp_path / "ra" / "gemma4_12b" / "kt" / "kiem_truoc.json").read_text(encoding="utf-8"))
     assert k["cau_hinh_sinh"]["generation_config_mo_hinh"]["suppress_tokens"] == [258883, 258882]
     assert k["cau_hinh_sinh"]["hieu_luc"]["suppress_tokens"] == [] and k["cau_hinh_sinh"]["la_greedy_dung"]
+
+
+
+def test_thu_muc_moi_khong_dung_chung(tmp_path):
+    """Hai lượt khởi động cùng một giây không thể dùng chung một thư mục, kể cả thư mục rỗng."""
+    from tn2 import nguon_goc as NG
+    p = NG.thu_muc_moi(tmp_path / "ra", "dung_huong_20261028_120000")
+    assert p.is_dir()
+    with pytest.raises(FileExistsError):
+        NG.thu_muc_moi(tmp_path / "ra", "dung_huong_20261028_120000")

@@ -57,7 +57,7 @@ def main(argv=None) -> int:
     p.add_argument("--mo_hinh_dac_ta", required=True)
     p.add_argument("--huong", required=True, help="huong.pt do buoc3_dung_huong.py ghi")
     p.add_argument("--mo_hinh", default=None)
-    p.add_argument("--revision", default=None)
+    p.add_argument("--revision", default=None, help="mặc định: commit HF ghi trong file hướng")
     p.add_argument("--ra", default=str(GOC / "results" / "buoc3"))
     p.add_argument("--ten_luot", default=None)
     p.add_argument("--so_cau", type=int, default=SO_CAU)
@@ -68,19 +68,22 @@ def main(argv=None) -> int:
     dac_ta = chon_dac_ta(a.mo_hinh_dac_ta)
     chinh_thuc = (a.so_cau == SO_CAU and a.so_cau_nhieu == SO_CAU_NHIEU and a.max_new_tokens == MAX_NEW_TOKENS_KIEM
                   and not a.bo_fp32)
+    # Đọc file hướng TRƯỚC khi đặt tên thư mục: hướng thử → thư mục kiem_hook_thu_… (rà lại pipeline 28/10/2026).
+    h = torch.load(a.huong, map_location="cpu")
+    if h.get("dac_ta") != dac_ta.ten:
+        print(f"DỪNG: file hướng của mô hình {h.get('dac_ta')}, không phải {dac_ta.ten}.")
+        return 1
+    huong_thu = not h.get("chinh_thuc", False)
+    if huong_thu:
+        chinh_thuc = False
     thu_muc = NG.thu_muc_moi(f"{a.ra}/{dac_ta.ten}",
                              a.ten_luot or ten_luot_mac_dinh("kiem_hook" if chinh_thuc else "kiem_hook_thu"))
     log = NhatKy(thu_muc / "nhat_ky.txt")
     log(f"Thư mục kết quả: {thu_muc}; lượt chính thức: {chinh_thuc}")
     bat_dau = time.time()
     so_hoc = thiet_lap_so_hoc()
-
-    h = torch.load(a.huong, map_location="cpu")
-    if h.get("dac_ta") != dac_ta.ten:
-        log(f"DỪNG: file hướng của mô hình {h.get('dac_ta')}, không phải {dac_ta.ten}.")
-        return 1
-    if not h.get("chinh_thuc", False):
-        chinh_thuc = False
+    revision = a.revision or h.get("commit_hf")
+    if huong_thu:
         log("CHÚ Ý: file hướng từ lượt dựng hướng thử (không chính thức) → lượt này không chính thức.")
     if h.get("canh_bao_dem"):
         log("CHÚ Ý: file hướng có cảnh báo đệm (trạng thái 'cần xem'). Phần 2 vẫn kiểm được cơ chế hook; hướng chưa "
@@ -94,14 +97,17 @@ def main(argv=None) -> int:
     nhieu_a, nhieu_b = tap.harmless_en[: a.so_cau_nhieu], tap.harm_en[: a.so_cau_nhieu]
 
     dm = device_map_mot_gpu()
-    model, tok = nap_mo_hinh(dac_ta, a.mo_hinh, revision=a.revision, device_map=dm)
+    model, tok = nap_mo_hinh(dac_ta, a.mo_hinh, revision=revision, device_map=dm)
     pb = phan_bo_thiet_bi(model, can_gpu=dm is not None)        # chỉ đòi GPU khi chính script xin GPU
     log(f"Phân bố thiết bị (bf16): {pb['so_tensor_theo_thiet_bi']}; một GPU: {pb['mot_thiet_bi']}")
     if not pb["mot_thiet_bi"]:
         log("DỪNG: mô hình không nằm trọn trên một GPU.")
         return 3
-    if h.get("commit_hf") and NG.thong_tin_mo_hinh(model, tok, dac_ta)["commit_hf"] not in (None, h["commit_hf"]):
-        log(f"DỪNG: file hướng dựng từ commit HF {h['commit_hf']}, mô hình đang nạp khác.")
+    c_nap = NG.thong_tin_mo_hinh(model, tok, dac_ta)["commit_hf"]
+    if (chinh_thuc and (not c_nap or c_nap != h.get("commit_hf"))) or (
+            h.get("commit_hf") and c_nap not in (None, h["commit_hf"])):
+        log(f"DỪNG: file hướng dựng từ commit HF {h.get('commit_hf')!r}, mô hình đang nạp có commit {c_nap!r} "
+            f"(None = không xác minh được). Lượt chính thức cần đúng commit của file hướng.")
         return 1
     khoi = kiem_khoi_tokenizer(tok, dac_ta, sorted(set(cau_a + cau_b + nhieu_a + nhieu_b)))
     if not khoi["dat"]:
@@ -145,7 +151,7 @@ def main(argv=None) -> int:
         torch.cuda.reset_peak_memory_stats()
         trong, tong = torch.cuda.mem_get_info()
         log(f"Bộ nhớ GPU trước khi nạp float32: trống {trong / 2**30:.1f} / {tong / 2**30:.1f} GiB")
-    model, _ = nap_mo_hinh(dac_ta, a.mo_hinh, dtype=torch.float32, revision=a.revision, device_map=dm)
+    model, _ = nap_mo_hinh(dac_ta, a.mo_hinh, dtype=torch.float32, revision=revision, device_map=dm)
     pb32 = phan_bo_thiet_bi(model, can_gpu=dm is not None)
     log(f"Phân bố thiết bị (float32): {pb32['so_tensor_theo_thiet_bi']}; một GPU: {pb32['mot_thiet_bi']}")
     if not pb32["mot_thiet_bi"]:

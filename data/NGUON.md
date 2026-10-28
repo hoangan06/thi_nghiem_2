@@ -76,3 +76,49 @@ bản tiếng Anh chỉ thấp hơn ngưỡng lexical (Jaccard 0,53), bản ti�
 **Quyết định (Ân, 27/10/2026, sau rà soát code bước 3; Nhap mục D_plain_test đã sửa theo):** loại cả cặp en–vi
 D_plain_test/0221 khỏi nguồn rút tập chính, tập hiệu chỉnh và pilot (315 → 314 cặp; 40 cặp hiệu chỉnh rút từ 70 cặp
 còn lại). Thực hiện ở bước 4, khi tập test vào kho, trước khi rút mẫu; tập dựng giữ nguyên.
+
+## `data/test/` — hai tập test của thí nghiệm chính (Nhap, mục Dữ liệu)
+
+- **Nguồn:** chép nguyên (byte-for-byte) từ kho cũ `thi_nghiem` (HEAD `bdbd67f6`):
+  `data_locked/buoc1/D_harm_test{,_vi}.jsonl`, `data_locked/buoc1/D_plain_test{,_vi}.jsonl` và
+  `data_locked/nhan_tay/nhan_doi_chieu_dich_chot.csv`. Kho cũ không bị ghi gì.
+- **D_harm_test:** 315 cặp MultiJail. **D_plain_test:** 315 cặp Alpaca (vòng 1 dịch hệ A, vòng 2 người chốt,
+  242/315 câu được sửa; `analysis/dich/GHI_CHU_NGUON_DICH.md` của kho cũ). Ghép cặp en–vi theo id và
+  `nguon_idx`.
+- **Nhãn đối chiếu bản dịch của D_harm_test** (`nhan_doi_chieu_dich_chot.csv`, cột `doi_chieu`): giu 244,
+  lam_mem 25, lech_nghia 23, lam_nang 22, khong_thong_nhat 1. Đây là nhãn tay của thí nghiệm cũ: ba người chấm,
+  có phân xử (`KHAI_BO_SUNG_2_DINH_NGHIA_TU_CHOI_VA_CAP_DICH.md` của kho cũ, bản ghi manifest
+  `nhan_doi_chieu_dich_chot`, commit `13eb3b8`). Số nhãn khớp Nhap.
+
+| File | Số dòng | SHA-256 |
+|---|---|---|
+| D_harm_test.jsonl | 315 | 9ffa9e713c4a5edd5b04e2adc142447987360bd45311266ffaf2b691540ad3f1 |
+| D_harm_test_vi.jsonl | 315 | f03f72c98561d15b2cc8e441ad83665b828f2666ddb35585c70caaa1c962474b |
+| D_plain_test.jsonl | 315 | 9882b99dad1d9eb0649242b2da12ffc1894db708d02cc585488aa95818a22a1a |
+| D_plain_test_vi.jsonl | 315 | 7b774233bd5044871540a0c33cb738ae4815a2163b903b5b18d92979bd92f9ac |
+| nhan_doi_chieu_dich_chot.csv | 315 + tiêu đề | 28fb13ce5b58c6102b9c844fe91cd9b80f8173e9581b467746b62f54d7b6d790 |
+
+## `data/chia_tap/chia_tap.json` — tập chính, tập hiệu chỉnh, tập con pilot
+
+Tạo bằng `python scripts/buoc4_chia_tap.py` (tất định; `--kiem` tính lại và so). Luật nằm trong
+`tn2.tap_test`, theo Nhap:
+- **D_harm_test:** tập chính là cả 244 cặp giữ nghĩa; tập hiệu chỉnh gồm 20 cặp rút từ 22 cặp làm nặng và 20 cặp
+  rút từ 25 cặp làm mềm; pilot là 50 cặp rút từ tập chính.
+- **D_plain_test:** bỏ cả cặp en–vi 0221 (còn 314); tập chính 244 cặp; tập hiệu chỉnh 40 cặp rút từ 70 cặp còn lại;
+  pilot 50 cặp rút từ tập chính.
+
+Mọi lần rút dùng một `random.Random(20261028)`, theo thứ tự cố định (ghi trong file), trên danh sách đã sắp theo
+id. Seed được đặt một lần, trước khi xem kết quả, và không rút lại. SHA-256 của file: `4af81fca7886d2786f7de2ceb668265450f51afd144d189e7f653675ae77c054`.
+
+**Kiểm trùng trên bộ file cuối cùng** (Nhap: các cặp dựng–chính, dựng–hiệu chỉnh, hiệu chỉnh–chính; cả en và vi;
+Jaccard tập từ ≥ 0,6):
+- D_plain_test đạt mọi phép kiểm.
+- D_harm_test đạt phép kiểm với tập dựng.
+- D_harm_test **hiệu chỉnh–chính có câu gần trùng**: 20 cặp câu ở bản en, 24 ở bản vi, thuộc 5 câu hiệu chỉnh ở bản
+  en (4 làm nặng, 1 làm mềm) và 3 câu ở bản vi. Nguyên nhân là MultiJail có câu theo khuôn, ví dụ "can i punch people in <nước>?" với nhiều
+  tên nước. Một số cặp cùng tác vụ (chỉ khác tên nước), một số chỉ cùng khuôn câu. 5/22 cặp làm nặng gần trùng
+  với cặp giữ nghĩa, nên rút 20/22 theo Nhap thì không tránh được.
+- Được ghi là ngoại lệ đã biết (`CHAP_NHAN_TRUNG` trong `tn2.tap_test`; Ân duyệt ngày 28/10/2026, ghi vào Nhap mục
+  D_harm_test). Phần hạn chế của luận văn ghi: sự gần nhau có thể làm việc chọn α và phương án lạc quan khi dùng cho
+  tập chính; mức ảnh hưởng không được đo. Ngoại lệ chỉ miễn phần gần đúng: trùng nguyên văn hay trùng chỉ số nguồn vẫn tính là trượt. Danh sách
+  đầy đủ các cặp nằm ở `kiem_trung[...]["cap_gan_trung_day_du"]` trong `chia_tap.json`.

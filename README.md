@@ -24,7 +24,16 @@ Cách chạy trên GPU thuê: `docs/RUNBOOK_BUOC_1.md`. Cấu trúc code và k�
 | `python scripts/buoc3_kiem_hook.py --huong …` | bản thu nhỏ phần 2, bf16 rồi float32 | `…/kiem_hook_*/` |
 | `python scripts/buoc3_do_toc_do.py --huong …` | câu/giờ, bộ nhớ đỉnh theo cỡ lô | `…/toc_do_*/` |
 
-Cách chạy: `docs/RUNBOOK_BUOC_3.md`.
+Cách chạy: `docs/RUNBOOK_BUOC_3.md` (hàm `b3`, `b4`, `gop4`, `may_moi` trong `scripts/ham_b.sh`).
+
+Đã viết, chưa chạy: **bước 4**, lượt hiệu chỉnh (sau bước 3).
+
+| Lệnh | Việc | Ghi ra |
+|---|---|---|
+| `python scripts/buoc4_chia_tap.py` | chia tập chính / hiệu chỉnh / pilot của hai tập test, kiểm trùng (CPU) | `data/chia_tap/chia_tap.json` |
+| `python scripts/buoc4_hieu_chinh.py --huong … --kiem_hook …` | sinh 488 đơn vị × 40 câu mỗi mô hình (gồm 4 đơn vị nền không hook để chẩn đoán); chạy lại là tiếp; `--chi_gop` chỉ gộp | `results/buoc4/<mô hình>/hieu_chinh/` |
+
+Cách chạy: `docs/RUNBOOK_BUOC_4.md`.
 
 ## Test (CPU, không tải gì từ mạng)
 

@@ -5,12 +5,13 @@ Chạy (sau buoc3_dung_huong.py):
     python scripts/buoc3_do_toc_do.py --mo_hinh_dac_ta qwen35_9b --huong results/buoc3/qwen35_9b/<lượt>/huong.pt
 
 Đo bằng đúng hàm sinh của pipeline chính (greedy, bf16, đệm trái, 256 token) trên 128 câu dựng (32 câu đầu của
-mỗi file en/vi), ở các cỡ lô 16, 32, 64, 128, hai chế độ:
+mỗi file en/vi), ở các cỡ lô 16, 32, 40, 64, 128 (40 là cỡ lô của bước 4), hai chế độ:
 - "nen": gắn hook α = 0 ở lớp giữa của lop_kiem_hook (như lượt nền của Nhap 3.6);
 - "can_thiep": kiểu (a), phương án 1, α = 0,8 (mức lớn nhất của lưới hiệu chỉnh), cùng lớp. Đây là một cấu hình
   đo, không phải cận trên đã chứng minh (độ dài câu trả lời và điểm dừng thay đổi theo cấu hình).
 Ghi toc_do.json (mỗi cấu hình: thời gian, câu/giờ, token/giây, bộ nhớ đỉnh, hết bộ nhớ hay không) và ước giờ GPU
-theo số câu của Nhap. Tốc độ đo trên loại GPU này KHÔNG áp sang loại GPU khác (báo cáo kết quả bước 1, mục 7):
+theo số câu của Nhap, kèm ước riêng cho bước 4 theo đúng số câu của kế hoạch (gồm mức mở rộng và lượt nền không
+hook) và tốc độ đo ở lô 40. Tốc độ đo trên loại GPU này KHÔNG áp sang loại GPU khác (báo cáo kết quả bước 1, mục 7):
 trước khi thuê máy cho lượt chính phải đo lại vài phút trên đúng loại máy đó.
 """
 from __future__ import annotations
@@ -38,10 +39,10 @@ def main(argv=None) -> int:
     p.add_argument("--mo_hinh_dac_ta", required=True)
     p.add_argument("--huong", required=True)
     p.add_argument("--mo_hinh", default=None)
-    p.add_argument("--revision", default=None)
+    p.add_argument("--revision", default=None, help="mặc định: commit HF ghi trong file hướng")
     p.add_argument("--ra", default=str(GOC / "results" / "buoc3"))
     p.add_argument("--ten_luot", default=None)
-    p.add_argument("--co_lo", default="16,32,64,128")
+    p.add_argument("--co_lo", default="16,32,40,64,128")
     p.add_argument("--so_cau_moi_file", type=int, default=32)
     p.add_argument("--max_new_tokens", type=int, default=MAX_NEW_TOKENS)
     a = p.parse_args(argv)
@@ -57,7 +58,7 @@ def main(argv=None) -> int:
     n = a.so_cau_moi_file
     cau = tap.harm_en[:n] + tap.harm_vi[:n] + tap.harmless_en[:n] + tap.harmless_vi[:n]
     dm = device_map_mot_gpu()
-    model, tok = nap_mo_hinh(dac_ta, a.mo_hinh, revision=a.revision, device_map=dm)
+    model, tok = nap_mo_hinh(dac_ta, a.mo_hinh, revision=a.revision or h.get("commit_hf"), device_map=dm)
     pb = phan_bo_thiet_bi(model, can_gpu=dm is not None)        # chỉ đòi GPU khi chính script xin GPU
     if not pb["mot_thiet_bi"]:
         log("DỪNG: mô hình không nằm trọn trên một GPU.")
@@ -88,6 +89,14 @@ def main(argv=None) -> int:
     tot = max(hop_le, key=lambda d: d["cau_moi_gio"]) if hop_le else None
     kq["uoc_gio_gpu_theo_lo_nhanh_nhat_che_do_can_thiep"] = (
         {"co_lo": tot["co_lo"], **uoc_gio_gpu(tot["cau_moi_gio"], dac_ta)} if tot else None)
+    # Bước 4 chạy lô 40 (một đơn vị một lô) và sinh cả mức mở rộng, lượt nền không hook: ước riêng theo đúng kế
+    # hoạch, ở tốc độ đo được tại lô 40 (rà lại pipeline 28/10/2026).
+    from tn2.sinh_luot import ke_hoach_hieu_chinh
+    so_cau_b4 = 40 * len(ke_hoach_hieu_chinh(dac_ta))
+    lo40 = [d for d in kq["can_thiep"] if d.get("co_lo") == 40 and not d.get("het_bo_nho")]
+    kq["uoc_gio_gpu_buoc4"] = ({"co_lo": 40, "so_cau": so_cau_b4, "cau_moi_gio": lo40[0]["cau_moi_gio"],
+                                "gio_gpu": so_cau_b4 / lo40[0]["cau_moi_gio"]} if lo40 else
+                               {"co_lo": 40, "so_cau": so_cau_b4, "het_bo_nho_hoac_khong_do": True})
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     tong = torch.cuda.get_device_properties(0).total_memory / 2**30 if torch.cuda.is_available() else None
     kq["gpu"] = {"ten": gpu, "tong_bo_nho_GiB": tong}
@@ -99,11 +108,20 @@ def main(argv=None) -> int:
                                         "mo_hinh": NG.thong_tin_mo_hinh(model, tok, dac_ta),
                                         "huong": str(a.huong), "huong_sha256": NG.sha256_file(a.huong),
                                         "huong_chinh_thuc": bool(h.get("chinh_thuc", False)),
+                                        "chinh_thuc": (bool(h.get("chinh_thuc", False)) and a.so_cau_moi_file == 32
+                                                       and a.max_new_tokens == MAX_NEW_TOKENS),
+                                        "tham_so": kq["tham_so"],
+                                        "bien_moi_truong": NG.bien_moi_truong_quan_trong(),
+                                        "du_lieu_sha256": {f.name: NG.sha256_file(f) for f in
+                                                           sorted((GOC / "data" / "dung_huong").glob("*.jsonl"))},
                                         "backend_lop_tuyen_tinh": backend_lop_tuyen_tinh(model),
                                         "phan_bo_thiet_bi": pb})
     if tot:
         log(f"Lô nhanh nhất (chế độ can thiệp): {tot['co_lo']}, {tot['cau_moi_gio']:.0f} câu/giờ; "
             f"ước giờ GPU: {kq['uoc_gio_gpu_theo_lo_nhanh_nhat_che_do_can_thiep']['gio_gpu']}")
+    b4 = kq["uoc_gio_gpu_buoc4"]
+    log(f"Ước cho bước 4 (lô 40, {b4['so_cau']} câu): "
+        + (f"{b4['gio_gpu']:.2f} giờ GPU" if "gio_gpu" in b4 else "KHÔNG đo được lô 40 (hết bộ nhớ?): báo Ân"))
     log(f"Xong sau {(time.time() - bat_dau) / 60:.1f} phút.")
     return 0
 

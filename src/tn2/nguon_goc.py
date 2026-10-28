@@ -25,6 +25,16 @@ def sha256_file(duong: str | Path) -> str:
     return h.hexdigest()
 
 
+def dau_van_tay_ma_nguon(goc: Path = GOC_KHO) -> dict[str, Any]:
+    """SHA của mọi file .py trong src/ và scripts/ (không cần git): chứng cứ code thật sự đã chạy, kể cả khi cây làm
+    việc không sạch. Đổi code giữa hai phiên thì đầu ra có thể đổi."""
+    goc = Path(goc)
+    tep = sorted(list((goc / "src").rglob("*.py")) + list((goc / "scripts").glob("*.py")))
+    tung = {str(p.relative_to(goc)).replace(os.sep, "/"): sha256_file(p) for p in tep if "__pycache__" not in p.parts}
+    return {"sha256": hashlib.sha256(json.dumps(tung, sort_keys=True).encode("utf-8")).hexdigest(),
+            "so_file": len(tung)}
+
+
 def commit_kho(goc: Path = GOC_KHO) -> str | None:
     git = goc / ".git"
     try:
@@ -58,6 +68,7 @@ def thong_tin_moi_truong() -> dict[str, Any]:
         "cuda": torch.version.cuda,
         "gpu": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else [],
         "commit_kho": commit_kho(),
+        "ma_nguon": dau_van_tay_ma_nguon(),
     }
     try:
         import tokenizers
@@ -101,20 +112,44 @@ def _bo_nan(obj: Any) -> Any:
     return obj
 
 
-def ghi_json(duong: str | Path, obj: Any) -> None:
-    duong = Path(duong)
+def fsync_thu_muc(thu_muc: str | Path) -> None:
+    """fsync thư mục để phép os.replace vừa làm bền qua mất điện (hệ file không hỗ trợ thì bỏ qua)."""
+    try:
+        fd = os.open(str(thu_muc), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _ghi_tam_roi_thay(duong: Path, ghi) -> None:
+    """Ghi qua file tạm ".<tên>.tam-<pid>" cùng thư mục + fsync + os.replace + fsync thư mục: file đích hoặc là bản
+    cũ, hoặc là bản mới đầy đủ, không bao giờ dở dang (đối chiếu lần cuối, R2, 28/10/2026)."""
     duong.parent.mkdir(parents=True, exist_ok=True)
-    with open(duong, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(_bo_nan(obj), f, ensure_ascii=False, indent=2, allow_nan=False)
-        f.write("\n")
+    tam = duong.with_name(f".{duong.name}.tam-{os.getpid()}")
+    with open(tam, "w", encoding="utf-8", newline="\n") as f:
+        ghi(f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tam, duong)
+    fsync_thu_muc(duong.parent)
+
+
+def ghi_json(duong: str | Path, obj: Any) -> None:
+    """Ghi JSON nguyên tử (NaN/inf → null)."""
+    du_lieu = _bo_nan(obj)
+    noi = json.dumps(du_lieu, ensure_ascii=False, indent=2, allow_nan=False) + "\n"   # lỗi tuần tự hoá: chưa đụng file
+    _ghi_tam_roi_thay(Path(duong), lambda f: f.write(noi))
 
 
 def ghi_jsonl(duong: str | Path, dong: Iterable[dict]) -> None:
-    duong = Path(duong)
-    duong.parent.mkdir(parents=True, exist_ok=True)
-    with open(duong, "w", encoding="utf-8", newline="\n") as f:
-        for d in dong:
-            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+    """Ghi JSONL nguyên tử."""
+    noi = "".join(json.dumps(d, ensure_ascii=False) + "\n" for d in dong)
+    _ghi_tam_roi_thay(Path(duong), lambda f: f.write(noi))
 
 
 def doc_jsonl(duong: str | Path) -> list[dict]:
@@ -125,11 +160,15 @@ def doc_jsonl(duong: str | Path) -> list[dict]:
 def thu_muc_moi(goc: str | Path, ten: str) -> Path:
     """Tạo thư mục kết quả mới; báo lỗi nếu đã tồn tại (không ghi đè lượt cũ)."""
     p = Path(goc) / ten
-    if p.exists() and any(p.iterdir()):
-        raise FileExistsError(f"Thư mục kết quả đã có dữ liệu: {p}")
-    p.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.mkdir()            # exist_ok=False: hai lượt khởi động cùng một giây không thể dùng chung một thư mục
+    except FileExistsError:
+        raise FileExistsError(f"Thư mục kết quả đã có: {p} (không ghi vào lượt cũ; chờ một giây rồi chạy lại "
+                              f"hoặc đặt --ten_luot khác)") from None
     return p
 
 
 def bien_moi_truong_quan_trong() -> dict[str, str | None]:
-    return {k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES", "HF_HOME", "TRANSFORMERS_OFFLINE")}
+    return {k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES", "HF_HOME", "TRANSFORMERS_OFFLINE", "HF_HUB_OFFLINE",
+                                           "USE_HUB_KERNELS")}

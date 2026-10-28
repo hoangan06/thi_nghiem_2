@@ -40,6 +40,18 @@ CO_LO = 32
 SO_CAU_DO_POSITION_IDS = 32
 
 
+def _luu_nguyen_tu(obj, duong) -> None:
+    """torch.save qua file tạm cùng thư mục + fsync + os.replace: file đích hoặc chưa có, hoặc đầy đủ."""
+    import os
+    tam = duong.with_name(f".{duong.name}.tam-{os.getpid()}")
+    with open(tam, "wb") as f:
+        torch.save(obj, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tam, duong)
+    NG.fsync_thu_muc(duong.parent)                # bền qua mất điện (đối chiếu lần cuối, R2, 28/10/2026)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mo_hinh_dac_ta", required=True)
@@ -78,6 +90,11 @@ def main(argv=None) -> int:
                         "so_cau_do_position_ids": SO_CAU_DO_POSITION_IDS},
             "du_lieu_sha256": {f.name: NG.sha256_file(f) for f in sorted((GOC / "data" / "dung_huong").glob("*.jsonl"))}}
     NG.ghi_json(thu_muc / "meta.json", meta)
+    if chinh_thuc and not meta["mo_hinh"]["commit_hf"]:
+        # Bước 4 đòi commit trong huong.pt (rà soát bước 4, B1): dừng ngay, không tốn trọn lượt (rà lại 28/10/2026).
+        log("DỪNG: không xác minh được commit Hugging Face của mô hình đang nạp (code cũ, hoặc nạp từ thư mục cục "
+            "bộ). Lượt chính thức cần commit; nạp bằng id Hugging Face như runbook, bằng code đã commit mới nhất.")
+        return 1
 
     vt = ma_hoa(tok, [tap.harm_en[0]], dac_ta).vi_tri_lay
     if dac_ta.vi_tri_lay_du_kien is not None and vt != dac_ta.vi_tri_lay_du_kien:
@@ -103,14 +120,16 @@ def main(argv=None) -> int:
     t["chinh_thuc"] = chinh_thuc
     t["canh_bao_dem"] = dp["canh_bao_dem"]
     t["trang_thai"] = "can_xem" if dp["canh_bao_dem"] else "dat"
-    torch.save(t, thu_muc / "huong.pt")
-    torch.save({"dac_ta": dac_ta.ten, "vi_tri_lay": t["vi_tri_lay"], "id_harm": tap.id_harm,
-                "id_harmless": tap.id_harmless, **kq["kich_hoat_vi_tri_lay"]}, thu_muc / "kich_hoat_vi_tri_lay.pt")
+    # Thứ tự ghi (rà lại pipeline 28/10/2026): kích hoạt và tóm tắt trước, huong.pt CUỐI CÙNG và nguyên tử (file tạm
+    # rồi đổi tên). Có huong.pt nghĩa là thư mục đã đủ; máy chết giữa chừng thì không có huong.pt, b3 / b4 bỏ qua.
+    _luu_nguyen_tu({"dac_ta": dac_ta.ten, "vi_tri_lay": t["vi_tri_lay"], "id_harm": tap.id_harm,
+                    "id_harmless": tap.id_harmless, **kq["kich_hoat_vi_tri_lay"]}, thu_muc / "kich_hoat_vi_tri_lay.pt")
     tom = kq["tom_tat"]
     tom["canh_bao_dem"] = dp["canh_bao_dem"]
     tom["trang_thai"] = t["trang_thai"]
     tom["chinh_thuc"] = chinh_thuc
     NG.ghi_json(thu_muc / "tom_tat.json", tom)
+    _luu_nguyen_tu(t, thu_muc / "huong.pt")
     for ng in ("en", "vi"):
         x = tom[ng]
         log(f"[{ng}] ‖r‖ theo lớp: {[round(v, 3) for v in x['do_lon_tho']]}")

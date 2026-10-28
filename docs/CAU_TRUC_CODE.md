@@ -11,8 +11,10 @@ của người viết code (Claude) cho các bước sau: chưa chốt, viết r
 2. **Mỗi bước của trình tự chạy có một gói con và các script mỏng.** Gói con `src/tn2/buocN/` chứa phần riêng
    của bước, còn script trong `scripts/` chỉ đọc tham số, gọi hàm và ghi kết quả.
 3. **Không ghi đè, có nguồn gốc.** Mỗi lượt chạy ghi vào thư mục mới, kèm `meta.json` và nhật ký.
-4. **Đơn giản trước.** Chưa làm cơ chế nối tiếp sau khi ngắt, không có manifest khoá hay sổ nguồn kiểu thí nghiệm
-   cũ. Lượt nào hỏng thì chạy lại. Nếu bước sau cần thêm, sẽ thêm khi đến bước đó.
+4. **Đơn giản trước, bền khi chạy trên máy thuê.** Bước 1 không có cơ chế nối tiếp; lượt nào hỏng thì chạy lại. Từ
+   bước 3, mỗi lượt ghi file chứng tỏ đã xong ở cuối cùng (`huong.pt`, `ket_luan.json`), và hàm `b3` chạy tiếp được từ
+   4d hoặc 4e. Bước 4 có cơ chế chạy tiếp theo từng đơn vị (`tn2.sinh_luot`), vì lượt dài và tốn tiền GPU (yêu cầu của
+   Ân, 27/10/2026).
 
 ## 2. Đã có (bước 1 và code bước 3)
 
@@ -55,10 +57,32 @@ scripts/
   buoc3_nap_kiem.py     nạp một GPU, cấu trúc, bộ đếm vị trí, sinh thử 32 câu, rò thinking
   buoc3_dung_huong.py   chẩn đoán đệm, rồi dựng hướng (luôn truyền position_ids); ghi huong.pt và kích hoạt từng câu
   buoc3_kiem_hook.py    bản thu nhỏ phần 2 (bf16 rồi float32), lớp theo đặc tả; lượt không hook lặp lại (chẩn đoán)
-  buoc3_do_toc_do.py    tốc độ và bộ nhớ: lô 16, 32, 64, 128; nền và can thiệp
+  buoc3_do_toc_do.py    tốc độ và bộ nhớ: lô 16, 32, 40, 64, 128; nền và can thiệp; ước giờ riêng cho bước 4 (lô 40)
+  ham_b.sh              hàm shell b3 (chạy tiếp từ 4d / 4e), b4, gop4, may_moi (máy thay thế: in đúng gói, commit) (nạp bằng source)
 docs/RUNBOOK_BUOC_3.md      trình tự chạy trên máy thuê
-tests/test_buoc3.py         31 test (tổng 81 test)
+tests/test_buoc3.py         32 test
 data/dung_huong/            D_harm_build, D_harmless_build, en và vi (xem data/NGUON.md)
+```
+
+Thêm cho bước 4 (code viết 27/10/2026, chưa chạy trên mô hình thật):
+
+```
+src/tn2/
+  tap_test.py     đọc D_harm_test, D_plain_test (en, vi) và nhãn đối chiếu bản dịch; chia tập chính / hiệu chỉnh /
+                  pilot theo Nhap (seed 20261028, thứ tự rút cố định); kiểm trùng ba cặp tập trên bộ file cuối
+  sinh_luot.py    đơn vị sinh (tập, phần, kiểu, ngôn ngữ câu hỏi, hướng, lớp, α, phương án); kế hoạch lượt hiệu chỉnh;
+                  sinh một đơn vị; ghi bền (file tạm + fsync + os.replace, .xong.json có SHA), chạy tiếp sau khi bị
+                  ngắt, chuyển file hỏng sang hong/, dấu vân tay lượt (kế hoạch, hướng, dữ liệu, mã nguồn), tổng hợp
+                  (dùng lại cho pilot, kiểm α Gemma, chạy chính, hướng ngẫu nhiên)
+  mo_hinh.py      + lop_hieu_chinh: Qwen 6, 11, 15, 21, 26; Gemma 9, 16, 23, 31, 38 (Nhap 3.4)
+scripts/
+  buoc4_chia_tap.py     tạo / kiểm data/chia_tap/chia_tap.json (CPU)
+  buoc4_hieu_chinh.py   lượt hiệu chỉnh một mô hình; chạy lại cùng lệnh là tiếp; --chi_ke_hoach xem kế hoạch;
+                        --chi_gop chỉ gộp (không nạp mô hình); --quyet_dinh_can_xem; kiểm lại chia tập trước khi chạy
+docs/RUNBOOK_BUOC_4.md      trình tự chạy trên máy thuê
+tests/test_buoc4.py         46 test (cả kho: 128 test)
+data/test/                  D_harm_test, D_plain_test (en, vi), nhan_doi_chieu_dich_chot.csv (xem data/NGUON.md)
+data/chia_tap/chia_tap.json cách chia tập (vào Git)
 ```
 
 Đối chiếu với Nhap:
@@ -83,7 +107,7 @@ data/dung_huong/            D_harm_build, D_harmless_build, en và vi (xem data/
 |---|---|---|
 | 2. Dự đoán bản 1 | không có code; file văn bản trong `doc_thi_nghiem_2` | — |
 | 3. Nạp, kiểm, dựng hướng và s_ℓ, phần 2 thu nhỏ, đo tốc độ | **đã viết** (mục 2), chưa chạy | `khuon`, `kich_hoat`, `huong`, `kiem_hook` |
-| 4. Hiệu chỉnh (sinh toàn bộ) | `sinh_luot.py` dùng chung cho 4, 7, 8, 10: một lượt = (mô hình, tập câu, ngôn ngữ, chiều, lớp, α, phương án, kiểu) → JSONL | `sinh`, `can_thiep` |
+| 4. Hiệu chỉnh (sinh toàn bộ) | **đã viết** (mục 2), chưa chạy: `tap_test.py`, `sinh_luot.py`, `scripts/buoc4_*` | `sinh`, `can_thiep`, `khuon` |
 | 5. Tập nhãn tham chiếu, chọn trọng tài | `trong_tai/` (gọi OpenRouter, lời nhắc trọng tài, Se/Sp/kappa) | — |
 | 6. Chấm, chọn α và phương án | `trong_tai/cham.py`, `phan_tich/chon_alpha.py` | — |
 | 7–8. Pilot Qwen, kiểm α Gemma | `sinh_luot.py`, `phan_tich/` | như trên |
@@ -127,11 +151,27 @@ Việc thêm cho bước 3, chốt 27/10 sau rà soát kết quả bước 1 (ch
 - Dựng hướng đủ điểm 1–8 của Nhap, gồm chia đôi và cosine giữa hai vị trí lấy kích hoạt.
 - Dữ liệu D_harm_build, D_harmless_build vào `data/` kèm SHA và nguồn; kiểm trùng ba cặp tập.
 
-Việc đã hẹn cho bước 4 (từ rà soát và đối chiếu code bước 3, 27/10/2026):
+Việc đã hẹn cho bước 4 (từ rà soát và đối chiếu code bước 3, 27/10/2026). **Đã làm trong code bước 4**:
 
 - Nhập tập test vào `data/`, chạy kiểm trùng (`tn2.du_lieu.kiem_trung`) cho dựng–chính, dựng–hiệu chỉnh,
   hiệu chỉnh–chính **trước** khi rút mẫu; loại cả cặp en–vi D_plain_test/0221 khỏi nguồn rút (314 cặp; 40 cặp
   hiệu chỉnh rút từ 70 cặp còn lại), ghi danh sách id và seed (Nhap mục D_plain_test, Q3).
 - Code của bước 4 chỉ nhận `huong.pt` có `trang_thai == "dat"` và `chinh_thuc == True`; hướng `can_xem` (cảnh
   báo đệm, Q2) phải được Ân xem và quyết trước.
-- Nạp đúng `commit_hf` đã ghi ở bước 3 (`--revision`), cùng backend kernel (`backend_lop_tuyen_tinh` trong meta).
+- Nạp đúng `commit_hf` đã ghi ở bước 3 (`--revision`); lượt chính thức dừng (mã 4) nếu commit của mô hình nạp
+  không xác minh được hoặc khác commit trong file hướng. `nap_mo_hinh` lấy commit từ config gốc khi config của mô hình
+  nạp vào không có (Qwen3.5 là checkpoint ghép, `AutoModelForCausalLM` dùng config con không mang `_commit_hash`);
+  bản trước ghi commit của Qwen3.5 là `None` ở mọi file kết quả bước 3, nên bước 3 phải chạy bằng code có bản sửa.
+- Cùng backend kernel và phiên bản gói với lượt kiểm hook bước 3: sau khi nạp, `buoc4_hieu_chinh.doi_chieu_buoc3`
+  so `backend_lop_tuyen_tinh_bf16`, `moi_truong` (torch, transformers, CUDA, tokenizers, flash-linear-attention,
+  causal-conv1d, kernels, USE_HUB_KERNELS) và commit trong `meta.json` của lượt kiểm hook; khác thì dừng mã 4, không
+  có cờ vượt (chạy lại kiểm hook trên máy đó). GPU khác chỉ ghi lại. (Thêm sau rà soát code bước 4, R2 B2: bản
+  trước của tài liệu này đã ghi mục này là đã làm trong khi code chưa so; Ân duyệt Q1, Q2 ngày 28/10/2026.)
+
+Việc hẹn cho bước 5 (từ code bước 4): mẫu con 1 000 câu của tập nhãn tham chiếu rút từ `cau_tra_loi.jsonl`
+(lượt nền và lưới chính), **không** từ `cau_tra_loi_mo_rong.jsonl` (Nhap 3.3: mức mở rộng không có trong tập nhãn).
+Khi đọc: kiểm SHA của file gộp với HOAN_TAT_CHINH.json; tách dòng bằng `tn2.sinh_luot.tach_dong_jsonl` (không dùng
+`str.splitlines()`); khoá câu trả lời là (`mo_hinh`, `ma_don_vi`, `id`); lượt nền chọn theo `loai == "nen"` (dòng
+nền có `lop`, `phuong_an` rỗng; hook α = 0 ở `lop_hook`); lượt nền không hook (`cau_tra_loi_nen_khong_hook.jsonl`)
+chỉ để chẩn đoán, không vào mẫu nhãn hay phép chấm. Phép kiểm vỡ tự động (Nhap 4.4, "tự sinh token điều khiển") đọc
+`token_ket_thuc`: câu trả lời của Gemma 4 dừng ở id 50 không có token đó trong `van_ban`.

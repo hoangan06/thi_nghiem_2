@@ -46,6 +46,8 @@ class DacTaMoHinh:
     lop_kiem_hook: tuple[int, ...] = ()
     # Token kết thúc phải giải mã ra đúng chuỗi này (kiểm khi nạp tokenizer).
     eos_du_kien: tuple[tuple[int, str], ...] = ()
+    # Năm lớp đại diện của tập hiệu chỉnh (Nhap 3.4): độ sâu ~20, 35, 50, 65, 80 %, có cả hai kiểu lớp.
+    lop_hieu_chinh: tuple[int, ...] = ()
 
 
 LLAMA3_8B = DacTaMoHinh(
@@ -89,6 +91,8 @@ QWEN35_9B = DacTaMoHinh(
     dau_hieu_thinking=("<think>", "</think>"),
     lop_kiem_hook=(8, 15, 24),
     eos_du_kien=((248046, "<|im_end|>"), (248044, "<|endoftext|>")),
+    # Nhap 3.4: theo ℓ/L, riêng lớp 15 (thay cho 16) để có một lớp full attention gần 50 %.
+    lop_hieu_chinh=(6, 11, 15, 21, 26),
 )
 
 GEMMA4_12B = DacTaMoHinh(
@@ -108,6 +112,8 @@ GEMMA4_12B = DacTaMoHinh(
     lop_kiem_hook=(12, 23, 36),
     # Nhap chỉ yêu cầu xác nhận id 106; id 1 và 50 được in ra để đối chiếu, không đặt chuỗi dự kiến.
     eos_du_kien=((106, "<turn|>"),),
+    # Nhap 3.4: theo ℓ/(L−1).
+    lop_hieu_chinh=(9, 16, 23, 31, 38),
 )
 
 CAC_MO_HINH = {d.ten: d for d in (LLAMA3_8B, QWEN35_9B, GEMMA4_12B)}
@@ -187,6 +193,13 @@ def nap_mo_hinh(dac_ta: DacTaMoHinh, duong_dan: str | None = None, dtype: torch.
     if dac_ta.pad_bang_eos or tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(nguon, dtype=dtype, device_map=device_map, revision=revision)
+    if getattr(model.config, "_commit_hash", None) is None:
+        # Qwen3.5 là checkpoint ghép (ảnh + chữ): AutoModelForCausalLM nạp Qwen3_5ForCausalLM với config con
+        # (get_text_config()), mà config con không mang _commit_hash, nên commit ghi lại sẽ là None dù nạp đúng id và
+        # revision trên Hugging Face. Lấy commit từ config gốc của cùng nguồn và revision (phát hiện khi rà độc lập các
+        # sửa sau rà soát code bước 4). Thư mục cục bộ không có commit: vẫn là None.
+        from transformers import AutoConfig
+        model.config._commit_hash = getattr(AutoConfig.from_pretrained(nguon, revision=revision), "_commit_hash", None)
     model.eval()
     model.requires_grad_(False)
     so_lop = len(tim_cac_lop(model))
@@ -271,7 +284,8 @@ def backend_lop_tuyen_tinh(model: torch.nn.Module) -> dict[str, Any]:
             continue
         thuc = _cai_dat_thuc(f)
         goc = inspect.unwrap(f)
-        ra[ten] = {"cai_dat": f"{getattr(thuc, '__module__', '?')}.{getattr(thuc, '__qualname__', repr(thuc))}",
+        ten_ham = getattr(thuc, "__qualname__", None) or type(thuc).__name__     # không dùng repr (có địa chỉ bộ nhớ)
+        ra[ten] = {"cai_dat": f"{getattr(thuc, '__module__', '?')}.{ten_ham}",
                    "la_ban_tham_chieu": thuc is goc}
     return ra
 
