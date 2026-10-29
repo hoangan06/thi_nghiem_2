@@ -219,7 +219,8 @@ def test_don_vi_hong_chuyen_sang_hong_va_sinh_lai(qwen, tmp_path):
 def _luu_huong(p, dt, **them):
     huong, s = _huong_gia(dt)
     t = {"dac_ta": dt.ten, "commit_hf": None, "r_hat_en": huong["en"], "r_hat_vi": huong["vi"], "s": s,
-         "trang_thai": "dat", "chinh_thuc": True, "position_ids_theo_mat_na": True}
+         "trang_thai": "dat", "chinh_thuc": True, "position_ids_theo_mat_na": True,
+         "attn_implementation": dt.attn_implementation}
     t.update(them)
     torch.save(t, p)
     return p
@@ -430,7 +431,7 @@ def test_script_moi_truong_khac_dung_ma_8(thu_muc_qwen35, tmp_path, monkeypatch)
              str(tmp_path / "l"), "--thu", "--gioi_han_cau", "1", "--max_new_tokens", "2", "--khong_mo_rong"]
     assert S.main(chung + ["--so_don_vi_toi_da", "2"]) == 7
     goc = S._moi_truong_so_hoc
-    monkeypatch.setattr(S, "_moi_truong_so_hoc", lambda m, t: {**goc(m, t), "gpu": "may-khac"})
+    monkeypatch.setattr(S, "_moi_truong_so_hoc", lambda m, t: {**goc(m, t), "ho_gpu": "NVIDIA H100"})
     truoc = _anh_thu_muc(tmp_path / "l" / "don_vi")
     assert S.main(chung + ["--so_don_vi_toi_da", "1"]) == 8
     assert _anh_thu_muc(tmp_path / "l" / "don_vi") == truoc
@@ -606,26 +607,106 @@ def test_khoa_tren_he_file_khong_ho_tro(tmp_path, monkeypatch):
 
 def test_doi_chieu_buoc3():
     """R2 B2: backend kernel, phiên bản gói và commit phải trùng lượt kiểm hook bước 3; GPU khác chỉ ghi lại."""
+    import functools
+
     import buoc4_hieu_chinh as S
+    dc = functools.partial(S.doi_chieu_buoc3, attn="sdpa", attn_dac_ta="sdpa")   # kiểu attention: test riêng bên dưới
     mt = {k: f"v_{k}" for k in S.KHOA_MOI_TRUONG_BUOC3} | {"gpu": ["H100"]}
     bk = {"chunk_gated_delta_rule": {"cai_dat": "fla.ops.chunk_gated_delta_rule", "la_ban_tham_chieu": False}}
-    meta = {"moi_truong": dict(mt), "backend_lop_tuyen_tinh_bf16": bk, "mo_hinh": {"commit_hf": "c1"}}
-    assert S.doi_chieu_buoc3(meta, mt, bk, "c1", thu=False) == {"bo_qua": False, "khac": [], "gpu_khac": None}
-    assert S.doi_chieu_buoc3(meta, mt | {"gpu": ["A100"]}, bk, "c1", False)["khac"] == []
-    assert S.doi_chieu_buoc3(meta, mt | {"gpu": ["A100"]}, bk, "c1", False)["gpu_khac"] is not None
-    assert S.doi_chieu_buoc3(meta, mt | {"torch": "khac"}, bk, "c1", False)["khac"][0].startswith("torch")
-    assert S.doi_chieu_buoc3(meta, mt | {"goi_flash-linear-attention": None}, bk, "c1", False)["khac"]
+    meta = {"moi_truong": dict(mt), "backend_lop_tuyen_tinh_bf16": bk,
+            "mo_hinh": {"commit_hf": "c1", "attn_implementation": "sdpa"}}
+    assert dc(meta, mt, bk, "c1", thu=False) == {"bo_qua": False, "khac": [], "gpu_khac": None, "attn_suy_ra": None}
+    assert dc(meta, mt | {"gpu": ["A100"]}, bk, "c1", False)["khac"] == []
+    assert dc(meta, mt | {"gpu": ["A100"]}, bk, "c1", False)["gpu_khac"] is not None
+    assert dc(meta, mt | {"torch": "khac"}, bk, "c1", False)["khac"][0].startswith("torch")
+    assert dc(meta, mt | {"goi_flash-linear-attention": None}, bk, "c1", False)["khac"]
     bk_pt = {"chunk_gated_delta_rule": {"cai_dat": "transformers.x.torch_chunk", "la_ban_tham_chieu": True}}
-    assert "backend" in S.doi_chieu_buoc3(meta, mt, bk_pt, "c1", False)["khac"][0]
-    assert S.doi_chieu_buoc3(meta, mt, bk, "c2", False)["khac"][0].startswith("commit")
+    assert "backend" in dc(meta, mt, bk_pt, "c1", False)["khac"][0]
+    assert dc(meta, mt, bk, "c2", False)["khac"][0].startswith("commit")
     # meta sai dạng: không đạt, không traceback
-    assert S.doi_chieu_buoc3(meta | {"backend_lop_tuyen_tinh_bf16": ["x"]}, mt, bk, "c1", False)["khac"]
-    assert S.doi_chieu_buoc3(meta | {"moi_truong": [1], "mo_hinh": "x"}, mt, bk, "c1", False)["khac"]
-    assert S.doi_chieu_buoc3([1], mt, bk, "c1", False)["khac"]
+    assert dc(meta | {"backend_lop_tuyen_tinh_bf16": ["x"]}, mt, bk, "c1", False)["khac"]
+    assert dc(meta | {"moi_truong": [1], "mo_hinh": "x"}, mt, bk, "c1", False)["khac"]
+    assert dc([1], mt, bk, "c1", False)["khac"]
     # lượt chính thức: meta thiếu trường thì không đạt; lượt thử thì bỏ qua phần thiếu; không có meta thì bỏ qua
-    assert len(S.doi_chieu_buoc3({"mo_hinh": {"commit_hf": "c1"}}, mt, bk, "c1", False)["khac"]) == 2
-    assert S.doi_chieu_buoc3({}, mt, bk, None, True)["khac"] == []
-    assert S.doi_chieu_buoc3(None, mt, bk, None, False)["bo_qua"] is True
+    assert len(dc({"mo_hinh": {"commit_hf": "c1"}}, mt, bk, "c1", False)["khac"]) == 3
+    assert dc({}, mt, bk, None, True)["khac"] == []
+    assert dc(None, mt, bk, None, False)["bo_qua"] is True
+
+
+def test_doi_chieu_buoc3_kieu_attention():
+    """Q-E2 (Ân duyệt 29/10/2026): kiểu attention phải trùng đặc tả và lượt kiểm hook; meta cũ thiếu trường chỉ qua
+    được theo ngoại lệ hẹp của lượt Qwen 28/10 (ghi "attn_suy_ra"); mọi meta khác thiếu trường thì dừng."""
+    import buoc4_hieu_chinh as S
+    mt = {k: f"v_{k}" for k in S.KHOA_MOI_TRUONG_BUOC3}
+    bk = {"x": {"cai_dat": "fla", "la_ban_tham_chieu": False}}
+    co = {"moi_truong": dict(mt), "backend_lop_tuyen_tinh_bf16": bk,
+          "mo_hinh": {"commit_hf": "c1", "attn_implementation": "eager"}}
+    dc = S.doi_chieu_buoc3
+    assert dc(co, mt, bk, "c1", False, attn="eager", attn_dac_ta="eager")["khac"] == []
+    k = dc(co, mt, bk, "c1", False, attn="sdpa", attn_dac_ta="eager")["khac"]
+    assert len(k) == 2 and all("kiểu attention" in x for x in k)          # sai đặc tả và khác lượt kiểm hook
+    assert "kiểu attention: bước 3" in dc(co, mt, bk, "c1", False, attn="sdpa", attn_dac_ta="sdpa")["khac"][0]
+    # meta thiếu trường, không thuộc ngoại lệ → dừng (lượt chính thức); lượt thử thì bỏ qua
+    thieu = co | {"mo_hinh": {"commit_hf": "c1"}}
+    assert "không ghi kiểu attention" in dc(thieu, mt, bk, "c1", False, attn="sdpa", attn_dac_ta="sdpa")["khac"][0]
+    assert dc(thieu, mt, bk, "c1", True, attn="sdpa", attn_dac_ta="sdpa")["khac"] == []
+    rong = co | {"mo_hinh": {"commit_hf": "c1", "attn_implementation": None}}       # có khoá nhưng rỗng = không ghi
+    assert "không ghi kiểu attention" in dc(rong, mt, bk, "c1", False, attn="sdpa", attn_dac_ta="sdpa")["khac"][0]
+    # ngoại lệ: đủ bốn khoá khớp → sdpa, có căn cứ
+    ng = S.NGOAI_LE_ATTN_CU[0]
+    mt_cu = mt | {"commit_kho": ng["commit_kho"]}
+    cu = {"dac_ta": "qwen35_9b", "moi_truong": dict(mt_cu), "backend_lop_tuyen_tinh_bf16": bk,
+          "mo_hinh": {"commit_hf": ng["commit_hf"]}, "tham_so": {"huong_sha256": ng["huong_sha256"]}}
+    r = dc(cu, mt_cu, bk, ng["commit_hf"], False, attn="sdpa", attn_dac_ta="sdpa")
+    assert r["khac"] == [] and r["attn_suy_ra"] == ng["can_cu"]
+    assert dc(cu, mt_cu, bk, ng["commit_hf"], False, attn="eager", attn_dac_ta="sdpa")["khac"]
+    for sai in ({"dac_ta": "gemma4_12b"}, {"tham_so": {"huong_sha256": "0" * 64}},
+                {"moi_truong": mt_cu | {"commit_kho": "abc"}}, {"mo_hinh": {"commit_hf": "khac"}}):
+        r = dc(cu | sai, mt_cu, bk, ng["commit_hf"], False, attn="sdpa", attn_dac_ta="sdpa")
+        assert r["attn_suy_ra"] is None and any("không ghi kiểu attention" in x for x in r["khac"]), sai
+
+
+def test_kiem_huong_kieu_attention():
+    """R1 B.3, R2 B2 (rà soát 29/10/2026): hướng phải dựng bằng kiểu attention của đặc tả. Hướng Gemma ngày 28/10
+    (sdpa, không ghi trường) bị chặn; hướng Qwen ngày 28/10 được nhận theo SHA (cùng ngoại lệ đã duyệt)."""
+    import buoc4_hieu_chinh as S
+    import tn2.kiem_attention as KA
+
+    def h(dt, **them):
+        return {"dac_ta": dt.ten, "trang_thai": "dat", "chinh_thuc": True, "position_ids_theo_mat_na": True,
+                "commit_hf": "c", "r_hat_en": 0, "r_hat_vi": 0, "s": 0} | them
+    sha_qwen = KA.HUONG_SDPA_CU["qwen35_9b"]
+    assert S._kiem_huong(h(GEMMA4_12B, attn_implementation="eager"), GEMMA4_12B, thu=False) == []
+    assert "attention" in S._kiem_huong(h(GEMMA4_12B), GEMMA4_12B, thu=False, huong_sha="abc")[0]
+    assert "attention" in S._kiem_huong(h(GEMMA4_12B, attn_implementation="sdpa"), GEMMA4_12B, thu=False)[0]
+    assert S._kiem_huong(h(GEMMA4_12B), GEMMA4_12B, thu=True) == []                  # lượt thử: bỏ qua
+    assert S._kiem_huong(h(QWEN35_9B), QWEN35_9B, thu=False, huong_sha=sha_qwen) == []
+    assert S._kiem_huong(h(QWEN35_9B), QWEN35_9B, thu=False, huong_sha="khac")        # thiếu trường, SHA khác
+    assert S._kiem_huong(h(GEMMA4_12B), GEMMA4_12B, thu=False, huong_sha=sha_qwen)    # SHA Qwen không áp cho Gemma
+    assert S.NGOAI_LE_ATTN_CU[0]["huong_sha256"] == sha_qwen
+
+
+def test_cache_hf_chi_co_snapshot_can_revision(tmp_path):
+    """Vì sao b3 truyền --revision cho 4a–4c (T1, đối chiếu lần cuối 29/10/2026): tải bằng `hf download --revision
+    <commit>` thì cache chỉ có snapshots/<commit>, không có refs/main; nạp offline không kèm revision sẽ lỗi."""
+    from transformers import AutoConfig, Qwen3_5TextConfig
+    sha = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    Qwen3_5TextConfig().save_pretrained(tmp_path / "models--Qwen--Qwen3.5-9B" / "snapshots" / sha)
+    with pytest.raises(OSError):
+        AutoConfig.from_pretrained("Qwen/Qwen3.5-9B", cache_dir=tmp_path, local_files_only=True)
+    cfg = AutoConfig.from_pretrained("Qwen/Qwen3.5-9B", revision=sha, cache_dir=tmp_path, local_files_only=True)
+    assert cfg._commit_hash == sha
+
+
+def test_ho_gpu_va_moi_truong_so_hoc():
+    """Ân quyết 29/10/2026: mọi A100 là cùng loại GPU; GPU khác họ vẫn bị coi là đổi môi trường."""
+    from tn2 import nguon_goc as NG
+    ho = {NG.ho_gpu(t) for t in ("NVIDIA A100-SXM4-80GB", "NVIDIA A100-SXM4-40GB", "NVIDIA A100-PCIE-40GB",
+                                 "NVIDIA A100 80GB PCIe")}
+    assert ho == {"NVIDIA A100"}
+    assert NG.ho_gpu("NVIDIA H100 80GB HBM3") == "NVIDIA H100 80GB HBM3" != NG.ho_gpu("NVIDIA A100-SXM4-80GB")
+    assert SL.bam_moi_truong({"ho_gpu": NG.ho_gpu("NVIDIA A100-SXM4-80GB")}) == \
+        SL.bam_moi_truong({"ho_gpu": NG.ho_gpu("NVIDIA A100-PCIE-40GB")})
 
 
 def test_script_moi_truong_khac_buoc3_dung_ma_4(thu_muc_qwen35, tmp_path, monkeypatch):
@@ -851,8 +932,9 @@ def test_quyet_dinh_can_xem(thu_muc_qwen35, tmp_path, monkeypatch):
     c3 = [x if x != str(kh2) else str(kh3) for x in c2]
     assert S.main(c3 + ["--quyet_dinh_can_xem", str(qd)]) == 4 and not (tmp_path / "l2").exists()
     assert S._kiem_huong({"dac_ta": "qwen35_9b", "trang_thai": "khong_dat", "chinh_thuc": True,
-                          "position_ids_theo_mat_na": True, "commit_hf": "x", "r_hat_en": 0, "r_hat_vi": 0, "s": 0},
-                         QWEN35_9B, thu=False, co_quyet_dinh=True)                   # 'không đạt' không bao giờ qua
+                          "position_ids_theo_mat_na": True, "commit_hf": "x", "r_hat_en": 0, "r_hat_vi": 0, "s": 0,
+                          "attn_implementation": "sdpa"},
+                         QWEN35_9B, thu=False, co_quyet_dinh=True) == ["trạng thái hướng là 'khong_dat', cần 'dat'"]
 
 
 def test_so_phien_khong_trung_khi_phien_jsonl_cu(tmp_path):
@@ -972,6 +1054,21 @@ def test_ham_b_sh(tmp_path):
     assert "dung_huong_20261028_100000/huong.pt" in dong[0]                  # bỏ thư mục dở mới hơn
     rc, dong = chay("b3 qwen35_9b tu_4e")
     assert rc == 0 and len(dong) == 1 and dong[0].startswith("scripts/buoc3_do_toc_do.py")
+    rc, dong = chay("b3 qwen35_9b kiem_nap")                                 # Q-E4: chỉ 4a, 4b
+    assert rc == 1 and dong == []      # có lượt dựng hướng mà meta.json thiếu commit → dừng, không chạy với "main"
+    (b3 / "dung_huong_20261028_100000" / "meta.json").write_text("{hỏng")
+    assert chay("b3 qwen35_9b kiem_nap") == (1, [])
+    # T1 (Ân duyệt 29/10/2026): 4a, 4b, 4c nhận commit HF của lượt dựng hướng đã xong mới nhất
+    (b3 / "dung_huong_20261028_100000" / "meta.json").write_text(json.dumps({"mo_hinh": {"commit_hf": "c0ffee"}}))
+    (b3 / "dung_huong_20261028_090000" / "meta.json").write_text(json.dumps({"mo_hinh": {"commit_hf": "cu"}}))
+    rc, dong = chay("b3 qwen35_9b kiem_nap")
+    assert rc == 0 and all(d.endswith("--mo_hinh_dac_ta qwen35_9b --revision c0ffee") for d in dong), dong
+    log = (w / "results" / "nhat_ky").glob("log_b3_*.txt")
+    assert any("Commit HF cho 4a–4c: c0ffee" in f.read_text(encoding="utf-8") for f in log)
+    rc, dong = chay("b3 qwen35_9b")
+    assert rc == 0 and [d.split()[0] for d in dong[:3]] == ["scripts/buoc3_kiem_truoc.py", "scripts/buoc3_nap_kiem.py",
+                                                             "scripts/buoc3_dung_huong.py"]
+    assert all(d.endswith("--revision c0ffee") for d in dong[:3]) and "--revision" not in " ".join(dong[3:]), dong
     rc, dong = chay("b3 qwen35_9b sai")
     assert rc == 1 and dong == []
     rc, dong = chay("b3 qwen35_9b tu_4e", nv="41000")                         # GPU đang bận (mô hình khác)

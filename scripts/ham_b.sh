@@ -34,6 +34,19 @@ _huong_moi_nhat() {
   return 1
 }
 
+# Commit Hugging Face của lượt dựng hướng đã xong mới nhất của mô hình $1 (meta.json → mo_hinh.commit_hf); rỗng nếu
+# chưa có. b3 truyền commit này cho 4a, 4b, 4c (T1 của đối chiếu lần cuối, Ân duyệt 29/10/2026): trên máy thay thế,
+# mô hình được tải bằng `hf download --revision <commit>`, mà khi revision là commit thì huggingface_hub không ghi
+# refs/main, nên sau khi bật HF_HUB_OFFLINE=1 lời gọi không có revision (tìm "main") sẽ lỗi. 4d, 4e lấy commit từ
+# huong.pt; bước 4 cũng vậy.
+_commit_b3() {
+  local H
+  H=$(_huong_moi_nhat $1) || return 0
+  python3 -c "import json,sys;m=json.load(open(sys.argv[1],encoding='utf-8'));print((m.get('mo_hinh') or {}).get('commit_hf') or '')" \
+    "$(dirname "$H")/meta.json" 2>/dev/null
+  return 0
+}
+
 # Lượt kiểm hook chính thức mới nhất mà ĐÃ XONG (có ket_luan.json, file ghi cuối của buoc3_kiem_hook) và chạy với
 # ĐÚNG file hướng $2 (meta.json: tham_so.huong_sha256 = SHA của $2).
 _kiem_hook_moi_nhat() {
@@ -47,25 +60,33 @@ _kiem_hook_moi_nhat() {
   return 1
 }
 
-# b3 <mô hình> [tu_4a | tu_4d | tu_4e]
+# b3 <mô hình> [tu_4a | tu_4d | tu_4e | kiem_nap]
 #   tu_4a (mặc định): chạy cả 4a → 4e.
+#   kiem_nap: chỉ 4a và 4b (kể cả phép quét attention) — vd. kiểm Qwen trên máy mới trước bước 4 khi đã có lượt
+#             dựng hướng và kiểm hook đạt (sửa sau kết quả bước 3, Ân duyệt 29/10/2026).
 #   tu_4d: máy chết trong 4d (kiểm hook): dùng lượt dựng hướng đã xong mới nhất, chạy 4d rồi 4e.
 #   tu_4e: máy chết trong 4e (đo tốc độ): chỉ chạy 4e.
 #   Máy chết trong 4a, 4b, 4c: chạy lại `b3 <mô hình>` (thư mục dở của 4c không có huong.pt nên bị bỏ qua).
 b3() {
-  local M=$1 TU=${2:-tu_4a} L rc H r4c=- r4d=-
-  case "$TU" in tu_4a|tu_4d|tu_4e) ;; *) echo "Cách gọi: b3 <mô hình> [tu_4a|tu_4d|tu_4e]"; return 1 ;; esac
+  local M=$1 TU=${2:-tu_4a} L rc H r4c=- r4d=- REV RA
+  case "$TU" in tu_4a|tu_4d|tu_4e|kiem_nap) ;; *) echo "Cách gọi: b3 <mô hình> [tu_4a|tu_4d|tu_4e|kiem_nap]"; return 1 ;; esac
   L=$(_nk log_b3)
   _gpu_ranh || { echo "DỪNG: GPU đang bị chiếm (nvidia-smi: đã dùng ≥ 2000 MiB). Không chạy song song." | tee -a $L; return 1; }
   _b() { local ten=$1; shift; echo "=== $M $ten: $*" | tee -a $L; _py "$@" 2>&1 | tee -a $L; rc=${PIPESTATUS[0]}; echo "=== $M $ten MÃ THOÁT: $rc" | tee -a $L; return $rc; }
   echo "=== $M b3 bắt đầu ($TU) trên $(hostname), $(date '+%F %T')" | tee -a $L
-  if [ "$TU" = tu_4a ]; then
+  if [ "$TU" = tu_4a ] || [ "$TU" = kiem_nap ]; then
+    if _huong_moi_nhat $M >/dev/null; then
+      REV=$(_commit_b3 $M)
+      [ -n "$REV" ] || { echo "DỪNG: có lượt dựng hướng nhưng không đọc được commit HF trong meta.json của nó" | tee -a $L; return 1; }
+      RA="--revision $REV"; echo "Commit HF cho 4a–4c: $REV (từ lượt dựng hướng mới nhất)" | tee -a $L
+    else RA=""; echo "Commit HF cho 4a–4c: không có lượt dựng hướng nào, dùng mặc định (main)" | tee -a $L; fi
     # 4a. Kiểm trước (vài giây, không nạp trọng số): khối 9 token, vị trí lấy −5, token kết thúc, layer_types, greedy.
-    _b 4a scripts/buoc3_kiem_truoc.py --mo_hinh_dac_ta $M || return
-    # 4b. Nạp và kiểm (⏱ 3–6 phút): một GPU, cấu trúc, bộ đếm vị trí, sinh thử 32 câu, rò thinking, token kết thúc.
-    _b 4b scripts/buoc3_nap_kiem.py --mo_hinh_dac_ta $M || return
+    _b 4a scripts/buoc3_kiem_truoc.py --mo_hinh_dac_ta $M $RA || return
+    # 4b. Nạp và kiểm (⏱ 4–8 phút): một GPU, cấu trúc, bộ đếm vị trí, quét attention, sinh thử 32 câu, rò thinking.
+    _b 4b scripts/buoc3_nap_kiem.py --mo_hinh_dac_ta $M $RA || return
+    [ "$TU" = kiem_nap ] && { echo "=== $M: xong kiem_nap (4a, 4b) trên $(hostname)" | tee -a $L; return 0; }
     # 4c. Dựng hướng và s_ℓ (⏱ 3–8 phút): chẩn đoán position_ids / đệm, 512 câu dựng, mọi lớp.
-    _b 4c scripts/buoc3_dung_huong.py --mo_hinh_dac_ta $M; r4c=$rc; [ $rc -eq 0 ] || [ $rc -eq 4 ] || return $rc
+    _b 4c scripts/buoc3_dung_huong.py --mo_hinh_dac_ta $M $RA; r4c=$rc; [ $rc -eq 0 ] || [ $rc -eq 4 ] || return $rc
   fi
   H=$(_huong_moi_nhat $M) || { echo "Không thấy lượt dựng hướng đã xong (có huong.pt) của $M" | tee -a $L; return 1; }
   echo "Hướng: $H" | tee -a $L

@@ -60,7 +60,7 @@ scripts/
   buoc3_do_toc_do.py    tốc độ và bộ nhớ: lô 16, 32, 40, 64, 128; nền và can thiệp; ước giờ riêng cho bước 4 (lô 40)
   ham_b.sh              hàm shell b3 (chạy tiếp từ 4d / 4e), b4, gop4, may_moi (máy thay thế: in đúng gói, commit) (nạp bằng source)
 docs/RUNBOOK_BUOC_3.md      trình tự chạy trên máy thuê
-tests/test_buoc3.py         32 test
+tests/test_buoc3.py         33 test
 data/dung_huong/            D_harm_build, D_harmless_build, en và vi (xem data/NGUON.md)
 ```
 
@@ -80,9 +80,35 @@ scripts/
   buoc4_hieu_chinh.py   lượt hiệu chỉnh một mô hình; chạy lại cùng lệnh là tiếp; --chi_ke_hoach xem kế hoạch;
                         --chi_gop chỉ gộp (không nạp mô hình); --quyet_dinh_can_xem; kiểm lại chia tập trước khi chạy
 docs/RUNBOOK_BUOC_4.md      trình tự chạy trên máy thuê
-tests/test_buoc4.py         46 test (cả kho: 128 test)
+tests/test_buoc4.py         50 test
 data/test/                  D_harm_test, D_plain_test (en, vi), nhan_doi_chieu_dich_chot.csv (xem data/NGUON.md)
 data/chia_tap/chia_tap.json cách chia tập (vào Git)
+```
+
+Sửa sau kết quả bước 3 (28/10/2026; Ân duyệt Q-E1 đến Q-E6 ngày 29/10/2026):
+
+```
+src/tn2/
+  mo_hinh.py        + DacTaMoHinh.attn_implementation (Qwen "sdpa", Gemma "eager"); nap_mo_hinh truyền vào và dừng
+                    nếu transformers dùng kiểu khác; kieu_attention(model)
+  kiem_attention.py quét attention theo độ dài: kiểu đang dùng so với sdpa backend MATH (một chuỗi m = 2…320, lô đệm ở
+                    độ dài ≡ 1 mod 32; bf16 thêm bốn lô thật của bước 4 và KV cache); luật bf16 (> 5 logit khong_dat,
+                    2–5 can_kiem) và float32 (> 0,5 logit khong_dat)
+  nguon_goc.py      + ho_gpu (mọi A100 là một họ); thong_tin_mo_hinh ghi attn_implementation
+scripts/
+  buoc3_nap_kiem.py     + kiểu attention đúng đặc tả, quét attention bf16 (vào "dat")
+  buoc3_kiem_hook.py    + quét attention float32 (không đạt → cả lượt khong_dat); quet_attention_fp32.json;
+                        dừng trước khi nạp nếu file hướng không dựng bằng kiểu attention của đặc tả
+  buoc3_dung_huong.py   + huong.pt ghi attn_implementation
+  buoc4_hieu_chinh.py   + cổng mã 4 so kiểu attention của mô hình, lượt kiểm hook (ngoại lệ hẹp NGOAI_LE_ATTN_CU cho
+                        lượt Qwen 28/10) và file hướng (kiem_attention.HUONG_SDPA_CU); cổng mã 8
+                        so họ GPU và kiểu attention
+  ham_b.sh              + b3 <mô hình> kiem_nap (chỉ 4a, 4b); b3 truyền --revision (commit của lượt dựng hướng mới
+                        nhất) cho 4a–4c
+  tien_do_b3.py         xem tiến độ bước 3 trên máy thuê (chỉ đọc)
+  so_sanh_huong_gemma.py  so hướng Gemma dựng bằng eager với hướng cũ (sdpa), chỉ mô tả
+docs/RUNBOOK_LUOT_THUE_TIEP.md  trình tự lượt thuê tiếp theo (bước 3 của Gemma, kiem_nap của Qwen, bước 4)
+tests/test_kiem_attention.py    31 test (cả kho: 166 test)
 ```
 
 Đối chiếu với Nhap:

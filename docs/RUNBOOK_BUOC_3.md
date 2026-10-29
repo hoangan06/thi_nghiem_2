@@ -4,6 +4,21 @@ Mục tiêu (Nhap, Trình tự chạy bước 3): với từng mô hình chính,
 thúc); dựng hướng và s_ℓ (mục Dựng hướng, điểm 1–8); chạy bản thu nhỏ phần 2 của kiểm pipeline (bf16 và float32);
 đo tốc độ sinh để tính lại chi phí. Chạy lần lượt hai mô hình trên cùng một máy. Thời gian dưới đây là ước, chưa đo.
 
+**Cập nhật 29/10/2026 (sau kết quả bước 3 ngày 28/10; Ân duyệt Q-E1 đến Q-E6).** Lượt thuê tiếp theo làm theo
+`RUNBOOK_LUOT_THUE_TIEP.md`; runbook này giữ cho tra cứu và cho máy chết giữa chừng. Các thay đổi:
+- Gemma 4 12B luôn nạp bằng attention `eager`, Qwen3.5-9B bằng `sdpa` (đặc tả trong `src/tn2/mo_hinh.py`); kiểu thực
+  dùng ghi vào `meta.json`, `huong.pt`, và bước 4 so lại.
+- 4b và 4d có thêm phép quét attention theo độ dài (`src/tn2/kiem_attention.py`).
+- `b3 <mô hình> kiem_nap` chỉ chạy 4a và 4b.
+- `b3` truyền `--revision <commit>` cho 4a, 4b, 4c, lấy từ `meta.json` của lượt dựng hướng đã xong mới nhất: trên máy
+  thứ hai trở đi, bản tải theo commit không có nhãn `main` nên nạp offline không kèm revision sẽ lỗi.
+- Cách xử lý khi phép quét bf16 ra `can_kiem` hay `khong_dat`: luật Ân duyệt ngày 29/10/2026 ở
+  `RUNBOOK_LUOT_THUE_TIEP.md`, mục 4 (Qwen) và mục 5 (Gemma).
+- GPU: bất kỳ A100 nào là cùng loại (Ân quyết 29/10/2026). Lượt có float32 ở 4d cần 80 GB. `ho_gpu` không coi lát
+  MIG là A100 thường.
+- `env_b3.sh` đặt `OMP_NUM_THREADS=16`, `MKL_NUM_THREADS=16`; không nâng torch; máy thứ hai trở đi không cài
+  `causal-conv1d` khi lượt bước 3 không có gói này.
+
 ## 0. Trước khi thuê (máy cá nhân, WSL)
 
 1. Commit code của kho `thi_nghiem_2` (Ân tự chạy git); `git status --porcelain` phải rỗng; ghi lại `git rev-parse HEAD`.
@@ -21,7 +36,11 @@ thúc); dựng hướng và s_ℓ (mục Dựng hướng, điểm 1–8); chạy
    python scripts/buoc3_kiem_truoc.py --mo_hinh_dac_ta gemma4_12b; echo "MÃ THOÁT: $?"
    unset HF_TOKEN
    ```
-4. WSL cần `rsync` và `ssh` (một lần): `sudo apt-get install -y rsync openssh-client`. Các lệnh trên máy cá nhân
+4. WSL cần `rsync` và `ssh` (một lần):
+   ```bash
+   sudo apt-get install -y rsync openssh-client
+   ```
+   Các lệnh trên máy cá nhân
    cần Python (`buoc3_kiem_truoc`, `gop4`) chạy trong venv của kho: `source .venv/bin/activate` trước (hoặc đặt
    `PYTHON=<đường dẫn python của venv>` cho `gop4`).
 5. Tên `may-thue` dùng trong mọi lệnh `rsync` / `ssh` của runbook là một mục trong `~/.ssh/config` của WSL. Sau khi
@@ -37,13 +56,13 @@ thúc); dựng hướng và s_ℓ (mục Dựng hướng, điểm 1–8); chạy
 
 | Tiêu chí | Giá trị |
 |---|---|
-| GPU | 1 GPU **80 GB** (A100 80GB hoặc H100 80GB). Báo cáo kết quả bước 1, mục 7: bản float32 của Gemma 4 12B khoảng 44,5 GiB chỉ riêng trọng số, chọn 80 GB để tránh hết bộ nhớ |
+| GPU | 1 GPU **A100 80 GB** (SXM4 hay PCIe đều được). Lượt float32 ở 4d của Gemma 4 12B đo đỉnh 48,6 GiB (28/10/2026), nên cần 80 GB. Lượt chỉ có bf16 (bước 4, `kiem_nap`) có thể dùng A100 40 GB, nhưng chỉ khi bộ nhớ đỉnh đo trong `toc_do.json` mới (lô 40, đúng kiểu attention) còn dư rõ |
 | Đĩa | ≥ 120 GB (hai mô hình khoảng 45 GB, môi trường, kết quả khoảng 1–2 GB) trên **ổ cục bộ** của máy (`/workspace` không phải ổ mạng; kiểm ở mục 3) |
 | Ảnh | Ubuntu có CUDA ≥ 12.8, Python 3.12, có `nvcc` (để thử cài kernel ở mục 2) |
 | Mạng | Direct SSH |
 
-Nếu sẽ chạy bước 4 ngay trên máy này (`RUNBOOK_BUOC_4.md`, cách 1), ghi lại **đúng tên loại GPU** của máy: khi phải
-chuyển bước 4 sang máy khác giữa chừng, máy mới phải cùng loại GPU (tên GPU nằm trong cổng mã 8 của bước 4).
+Mọi lượt bước 3 và bước 4 dùng GPU **họ A100** (Ân quyết 29/10/2026: SXM4 hay PCIe, 40 hay 80 GB đều cùng chip GA100).
+Cổng mã 8 của bước 4 so họ GPU, không so tên đầy đủ; tên đầy đủ vẫn được ghi lại.
 
 ## 2. Đưa code lên, dựng môi trường
 
@@ -63,10 +82,12 @@ lệnh `rsync` trên.)
 Trên máy thuê, trong tmux (`tmux new -s b3`). Tạo `env_b3.sh` **trước tiên**, để mọi cửa sổ, kể cả sau khi mất kết
 nối giữa chừng, dùng cùng `HF_HOME` và cùng môi trường:
 ```bash
-printf 'export HF_HOME=/workspace/hf\nexport USE_HUB_KERNELS=NO\n[ -f /workspace/venv/bin/activate ] && . /workspace/venv/bin/activate\ncd /workspace/thi_nghiem_2 && . scripts/ham_b.sh\n' > /workspace/env_b3.sh
+printf 'export HF_HOME=/workspace/hf\nexport USE_HUB_KERNELS=NO\nexport OMP_NUM_THREADS=16\nexport MKL_NUM_THREADS=16\n[ -f /workspace/venv/bin/activate ] && . /workspace/venv/bin/activate\ncd /workspace/thi_nghiem_2 && . scripts/ham_b.sh\n' > /workspace/env_b3.sh
 python3 -m venv /workspace/venv && . /workspace/env_b3.sh
 pip install -U pip
 ```
+`OMP_NUM_THREADS=16`: lượt 28/10 cho thấy torch mở 64 luồng trên máy 32 vCPU, pytest chậm hơn nhiều lần. Không nâng
+torch ở nhánh nào, kể cả khi pip gợi ý: mọi lượt phải cùng torch 2.11.0 với lượt kiểm hook bước 3.
 
 **Máy đầu tiên:**
 ```bash
@@ -88,7 +109,7 @@ Cả hai nhánh, rồi chạy test:
 ```bash
 python -c "import torch,transformers;print(torch.__version__, transformers.__version__, torch.cuda.get_device_name(0))"
 mkdir -p results/nhat_ky
-CUDA_VISIBLE_DEVICES="" python -m pytest -q -p no:cacheprovider tests/ 2>&1 | tee -a results/nhat_ky/pytest_$(hostname)_$(date +%Y%m%d_%H%M%S).txt; echo "MÃ THOÁT: ${PIPESTATUS[0]}"     # ⏱ 6–10 phút; phải: 128 passed
+CUDA_VISIBLE_DEVICES="" python -m pytest -q -p no:cacheprovider tests/ 2>&1 | tee -a results/nhat_ky/pytest_$(hostname)_$(date +%Y%m%d_%H%M%S).txt; echo "MÃ THOÁT: ${PIPESTATUS[0]}"     # ⏱ 10–15 phút; phải: 166 passed
 ```
 Có test hỏng thì dừng, chép `results/nhat_ky/` về, không chạy tiếp. `CUDA_VISIBLE_DEVICES=""` chỉ áp cho tiến trình
 test: test chạy đúng như đã kiểm trên CPU, còn các lệnh ở mục 4 vẫn thấy GPU.
@@ -103,10 +124,11 @@ cùng phiên bản gói với lượt kiểm hook này: bước 4 tự so và d�
 bản `flash-linear-attention` ghim ở 0.6.0, bản đã đọc mã khi rà soát, 27/10/2026):
 ```bash
 pip install flash-linear-attention==0.6.0 2>&1 | tail -2
-pip install causal-conv1d --no-build-isolation 2>&1 | tail -2                      # ⏱ có thể 10–20 phút biên dịch
+MAX_JOBS=16 pip install causal-conv1d --no-build-isolation 2>&1 | tail -2           # ⏱ có thể 10–20 phút biên dịch
 ```
 **Máy thứ hai trở đi:** **không** chạy khối trên; chạy đúng hai dòng `flash-linear-attention`, `causal-conv1d` mà
-`may_moi` in ra (dòng ghi "KHÔNG cài" thì không cài gói đó). Gói `kernels` không cài ở nhánh nào.
+`may_moi` in ra (dòng ghi "KHÔNG cài" thì không cài gói đó; lượt 28/10 không có `causal-conv1d`). Gói `kernels` không
+cài ở nhánh nào.
 
 Cả hai nhánh, ghi lại gói đã cài:
 ```bash
@@ -168,10 +190,36 @@ Mã 24 của `rsync` trong vòng này là bình thường (một file tạm bi�
 lệch nhau; chỉ bản kéo cuối cùng có kiểm SHA (mục 5) mới là bản chính thức.
 
 Hàm `b3`, `b4`, `gop4`, `may_moi` nằm trong `scripts/ham_b.sh` (đã có trong kho, `env_b3.sh` tự nạp; không dán tay). Mỗi cửa sổ
-tmux mới, kể cả sau khi máy khởi động lại: `. /workspace/env_b3.sh`. Rồi chạy `b3 qwen35_9b`, xong thì `b3 gemma4_12b`.
+tmux mới, kể cả sau khi máy khởi động lại:
+```bash
+. /workspace/env_b3.sh
+```
+Rồi chạy lần lượt (xong mô hình này mới chạy mô hình kia):
+```bash
+b3 qwen35_9b
+```
+```bash
+b3 gemma4_12b
+```
+Chỉ kiểm nạp trên máy mới (4a, 4b, kể cả quét attention), khi đã có lượt dựng hướng và kiểm hook đạt:
+```bash
+b3 qwen35_9b kiem_nap
+```
+Xem tiến độ ở một cửa sổ khác:
+```bash
+python3 scripts/tien_do_b3.py
+```
 `b3` không chạy nếu GPU đang bị chiếm (`nvidia-smi` báo đã dùng từ 2 000 MiB trở lên, ví dụ mô hình kia còn nạp ở cửa
 sổ khác). Nếu `nvidia-smi` không có tiến trình nào của mình mà bộ nhớ đã dùng vẫn từ 2 000 MiB, hỏi Ân; được đồng ý thì
-gọi `KHONG_KIEM_GPU=1 b3 <mô hình>`. Log ghi vào `results/nhat_ky/log_b3_<máy>.txt`.
+gọi:
+```bash
+KHONG_KIEM_GPU=1 b3 <mô hình>
+```
+Log ghi vào `results/nhat_ky/log_b3_<máy>.txt`.
+
+Kiểu attention: Gemma nạp bằng `eager`, Qwen bằng `sdpa`. Lý do: ở Gemma, kernel EFFICIENT_ATTENTION của `sdpa`
+(PyTorch 2.11) cho logit sai khi số vị trí truy vấn m ≡ 1 (mod 32), m ≥ 33 (PyTorch issue #191937; báo cáo kết quả
+bước 3). `nap_mo_hinh` dừng nếu transformers không dùng đúng kiểu của đặc tả.
 
 `b3` dừng ngay ở bước đầu tiên có mã thoát khác 0. Riêng mã 4 ("cần xem") ở 4c và 4d thì chạy tiếp: phần 2 kiểm cơ
 chế hook (đúng với hướng nào cũng được), đo tốc độ không phụ thuộc hướng. Mã 4 vẫn **không phải đạt** (mục 6): bước
@@ -182,13 +230,23 @@ trên máy thuê.
 | Bước trong `b3` | Việc | ⏱ ước |
 |---|---|---|
 | 4a | Kiểm trước (không nạp trọng số): khối 9 token, vị trí lấy −5, token kết thúc, `layer_types`, greedy | vài giây |
-| 4b | Nạp và kiểm: một GPU, cấu trúc, bộ đếm vị trí, sinh thử 32 câu, rò thinking, token kết thúc | 3–6 phút |
+| 4b | Nạp và kiểm: một GPU, cấu trúc, bộ đếm vị trí, kiểu attention, quét attention bf16 (m = 2…320, lô đệm, bốn lô thật của bước 4, KV cache), sinh thử 32 câu, rò thinking, token kết thúc | 4–8 phút |
 | 4c | Dựng hướng và s_ℓ: chẩn đoán position_ids / đệm, 512 câu dựng, mọi lớp | 3–8 phút |
-| 4d | Bản thu nhỏ phần 2, bf16 rồi float32 | 40–120 phút |
-| 4e | Đo tốc độ và bộ nhớ: lô 16, 32, 40, 64, 128; nền và can thiệp α = 0,8; ước giờ GPU, kể cả riêng cho bước 4 | 10–30 phút |
+| 4d | Bản thu nhỏ phần 2, bf16 rồi float32; quét attention float32 (m = 2…320 và lô đệm 8 câu ở độ dài ≡ 1 mod 32) | 35–60 phút (đo 28/10) |
+| 4e | Đo tốc độ và bộ nhớ: lô 16, 32, 40, 64, 128; nền và can thiệp α = 0,8; ước giờ GPU, kể cả riêng cho bước 4 | 7–15 phút (đo 28/10) |
 
-**Máy chết hoặc mất kết nối giữa `b3`:** trước hết `tmux ls` và `nvidia-smi`. Nếu tiến trình cũ vẫn chạy thì cứ để nó
-chạy (nối lại bằng `tmux attach -t b3`). Nếu đã chết:
+**Máy chết hoặc mất kết nối giữa `b3`:** trước hết xem tmux và GPU:
+```bash
+tmux ls
+```
+```bash
+nvidia-smi
+```
+Nếu tiến trình cũ vẫn chạy thì cứ để nó chạy, nối lại bằng:
+```bash
+tmux attach -t b3
+```
+Nếu đã chết:
 
 | Chết trong | Chạy lại | Lý do |
 |---|---|---|
@@ -203,9 +261,9 @@ Mã thoát:
 | Script | 0 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|
 | buoc3_kiem_truoc | đạt | cấu trúc config hoặc cấu hình sinh lệch | **khối sau câu hỏi / template / token kết thúc lệch dự kiến: DỪNG** | — | — |
-| buoc3_nap_kiem | đạt | có phép kiểm không đạt (xem `nap_kiem.json`) | — | không nằm trọn một GPU | — |
+| buoc3_nap_kiem | đạt (kể cả quét attention `can_kiem`: log ghi `CHÚ Ý`; đọc theo luật ở `RUNBOOK_LUOT_THUE_TIEP.md`, mục 4, 5) | có phép kiểm không đạt (xem `nap_kiem.json`), kể cả kiểu attention sai đặc tả hoặc quét attention `khong_dat` | — | không nằm trọn một GPU | — |
 | buoc3_dung_huong | xong | lỗi, hoặc lượt chính thức không xác minh được commit mô hình | — | không nằm trọn một GPU | **cần xem**: cảnh báo đệm bật, hướng chưa dùng cho bước 4 |
-| buoc3_kiem_hook | đạt | không đạt, hoặc commit mô hình không khớp file hướng | khối lệch | không nằm trọn một GPU | **cần xem** (không phải đạt) |
+| buoc3_kiem_hook | đạt | không đạt (kể cả quét attention float32 `khong_dat`), hoặc commit mô hình không khớp file hướng, hoặc file hướng không dựng bằng kiểu attention của đặc tả | khối lệch | không nằm trọn một GPU | **cần xem** (không phải đạt) |
 | buoc3_do_toc_do | xong | lỗi | — | không nằm trọn một GPU | — |
 
 Nếu `buoc3_kiem_truoc` trả mã 2: **không sửa code trên máy thuê**. Kéo `results/` về. Trước khi kết luận "khối
@@ -244,9 +302,9 @@ Chỉ huỷ máy khi **không** chạy bước 4 ngay trên máy này. Nếu ch�
 | Lượt | File chính | Đọc gì |
 |---|---|---|
 | `kiem_truoc_*` | `kiem_truoc.json` | `khoi_sau_cau_hoi` (9 token trên 512 câu, vị trí −5), `token_ket_thuc`, `cau_truc_config`, `cau_hinh_sinh.la_greedy_dung`, `chat_template` đã dùng |
-| `nap_kiem_*` | `nap_kiem.json`, `sinh_thu.jsonl` | `dat_thanh_phan`; `phan_bo_thiet_bi`, `cau_truc` (đường dẫn lớp, full attention, `layer_scalar` của Gemma), `goi_embedding`, `sinh_thu.ro_thinking`, `sinh_thu.so_cau_theo_eos` (đạt khi có câu dừng ở id chính; 0 câu → xem lại eos); đọc vài câu trong `sinh_thu.jsonl` bằng mắt |
+| `nap_kiem_*` | `nap_kiem.json`, `sinh_thu.jsonl` | `dat_thanh_phan`; `kieu_attention` (đang dùng, đặc tả); `quet_attention`: `trang_thai` (bf16: > 5 logit `khong_dat`, 2–5 `can_kiem`, ≤ 2 `dat`), `lech_lon_nhat`, `lech_lon_nhat_m_xau` / `lech_lon_nhat_m_khac` (m ≡ 1 mod 32 hay không), `so_o_khong_huu_han`, `do_dai_sai`, bảng `don`, `lo`, `lo_thuc`, `cache`; `phan_bo_thiet_bi`, `cau_truc` (đường dẫn lớp, full attention, `layer_scalar` của Gemma), `goi_embedding`, `sinh_thu.ro_thinking`, `sinh_thu.so_cau_theo_eos` (đạt khi có câu dừng ở id chính; 0 câu → xem lại eos); đọc vài câu trong `sinh_thu.jsonl` bằng mắt |
 | `dung_huong_*` | `tom_tat.json`, `do_position_ids.json`, `huong.pt` | **`trang_thai`** / **`canh_bao_dem`** (True → mã 4: không dùng hướng cho bước 4 trước khi Ân xem); `do_position_ids.json` chỉ chẩn đoán: lệch tương đối B–C theo lớp và theo câu (cờ tắt không chứng nhận không có lỗi đệm); ‖r‖, ‖r‖/s, s theo lớp; cosine chia đôi; cosine hai vị trí (chỉ chẩn đoán, Nhap điểm 7, null ở lớp có hướng bằng 0); cosine en–vi (chỉ mô tả). Thư mục không có `huong.pt` là lượt dở |
-| `kiem_hook_*` | `ket_luan.json`, `ket_qua_fp32.json` | như bước 1: (ii) ở hai kiểu số; (i), (iii), kiểm âm ở float32; `trang_thai` `dat` / `can_xem` / `khong_dat`, luật ba mức (docstring `tn2.kiem_hook`). Chẩn đoán: `tong_ket.khong_hook_lap_lai_khop` (False: đường nền không tất định, nên khi (ii) trượt chưa thể quy riêng độ lệch cho hook; cũng chưa loại trừ lỗi hook: dừng, xem cùng Ân); `backend_lop_tuyen_tinh` của lượt float32 phải toàn `la_ban_tham_chieu: true` với Qwen. Thư mục không có `ket_luan.json` là lượt dở |
+| `kiem_hook_*` | `ket_luan.json`, `ket_qua_fp32.json`, `quet_attention_fp32.json` | `ket_luan.quet_attention_fp32` (float32: ≤ 0,5 logit `dat`, không đạt thì cả lượt `khong_dat`); như bước 1: (ii) ở hai kiểu số; (i), (iii), kiểm âm ở float32; `trang_thai` `dat` / `can_xem` / `khong_dat`, luật ba mức (docstring `tn2.kiem_hook`). Chẩn đoán: `tong_ket.khong_hook_lap_lai_khop` (False: đường nền không tất định, nên khi (ii) trượt chưa thể quy riêng độ lệch cho hook; cũng chưa loại trừ lỗi hook: dừng, xem cùng Ân); `backend_lop_tuyen_tinh` của lượt float32 phải toàn `la_ban_tham_chieu: true` với Qwen. Thư mục không có `ket_luan.json` là lượt dở |
 | `toc_do_*` | `toc_do.json` | câu/giờ, bộ nhớ đỉnh theo cỡ lô; ước giờ GPU theo số câu của Nhap cho riêng mô hình này (chạy chính theo số lớp); **`uoc_gio_gpu_buoc4`**: giờ GPU cho bước 4 theo đúng số câu của kế hoạch (19 520 câu mỗi mô hình), ở tốc độ đo tại lô 40 |
 | `nhat_ky/` | `log_b3_<máy>.txt`, `pytest_<máy>_<giờ>.txt`, `pip_freeze_<máy>_<giờ>.txt`, `kernel_<máy>_<giờ>.txt`, `sha256_buoc3_<máy>_<giờ>.txt` | log đầy đủ (kể cả traceback), kết quả pytest, phiên bản gói, danh sách SHA |
 

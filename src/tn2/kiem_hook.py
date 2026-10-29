@@ -123,7 +123,13 @@ def logit_tung_cau_co_cache(model, ids_loi_nhac: Sequence[int], ids_tiep: Sequen
 
 
 def _lech_theo_vi_tri(a: torch.Tensor, b: torch.Tensor) -> list[float]:
-    """Độ lệch logit lớn nhất (trên từ vựng) ở từng vị trí sinh j = 0…g−1."""
+    """Độ lệch logit lớn nhất (trên từ vựng) ở từng vị trí sinh j = 0…g−1.
+
+    Có ô không hữu hạn (NaN, ±Inf) ở a hoặc b → ValueError: phép kiểm dừng, script thoát mã khác 0 và không ghi
+    ket_luan.json. Trước đây NaN đi qua amax rồi bị max() của Python bỏ qua khi gộp, nên kết luận có thể là 'dat'
+    (R2, đối chiếu lần cuối 29/10/2026; Ân duyệt T2)."""
+    if not (bool(torch.isfinite(a).all()) and bool(torch.isfinite(b).all())):
+        raise ValueError("logit không hữu hạn (NaN/Inf) trong phép so của kiểm hook: dừng, không kết luận")
     return (a - b).abs().amax(dim=-1).cpu().tolist()
 
 

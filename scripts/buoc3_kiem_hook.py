@@ -17,7 +17,10 @@ cho kernel flash-linear-attention / causal-conv1d, vì kernel Triton dùng TF32 
 27/10/2026); bf16 giữ backend tối ưu. Backend thực dùng ghi trong meta.json (bf16) và ket_qua_fp32.json (float32). Hạn chế: lượt float32
 kiểm cơ chế hook bằng bản tham chiếu, không chứng nhận kernel tối ưu dùng ở bf16.
 Chẩn đoán thêm (không vào tiêu chí): mỗi kiểu chạy lượt không hook hai lần và so với nhau (khong_hook_lap_lai).
-Mã thoát: 0 đạt; 1 không đạt; 2 khối sau câu hỏi lệch đặc tả; 3 mô hình không nằm trọn một GPU;
+Trong lượt float32, trước phép kiểm: quét attention theo độ dài (tn2.kiem_attention, m = 2…320 và lô đệm, ngưỡng
+0,5 logit; sửa sau kết quả bước 3, Ân duyệt 29/10/2026), ghi quet_attention_fp32.json; không đạt thì cả lượt không đạt.
+Mã thoát: 0 đạt; 1 không đạt (kể cả file hướng không dựng bằng kiểu attention của đặc tả); 2 khối sau câu hỏi
+lệch đặc tả; 3 mô hình không nằm trọn một GPU;
 4 "cần xem" (KHÔNG phải đạt: đọc ket_luan.json và chan_doan_vi_tri theo luật viết trước).
 """
 from __future__ import annotations
@@ -33,6 +36,7 @@ import torch
 from tn2 import nguon_goc as NG
 from tn2.buoc3.nap_kiem import kiem_khoi_tokenizer
 from tn2.du_lieu import nap_tap_dung
+from tn2 import kiem_attention as KA
 from tn2.kiem_hook import ALPHA_KIEM, MAX_NEW_TOKENS_KIEM, DauVaoKiemHook, chay_kiem_hook, ket_luan_hai_kieu_so
 from tn2.mo_hinh import (backend_lop_tuyen_tinh, ban_tham_chieu_pytorch, eos_tu_mo_hinh, nap_mo_hinh,
                          phan_bo_thiet_bi)
@@ -64,14 +68,22 @@ def main(argv=None) -> int:
     p.add_argument("--so_cau_nhieu", type=int, default=SO_CAU_NHIEU)
     p.add_argument("--max_new_tokens", type=int, default=MAX_NEW_TOKENS_KIEM)
     p.add_argument("--bo_fp32", action="store_true", help="lượt thử: chỉ chạy bf16 (không cho kết luận)")
+    p.add_argument("--quet_den", type=int, default=KA.M_TOI_DA, help="độ dài lớn nhất của phép quét attention fp32")
     a = p.parse_args(argv)
     dac_ta = chon_dac_ta(a.mo_hinh_dac_ta)
-    chinh_thuc = (a.so_cau == SO_CAU and a.so_cau_nhieu == SO_CAU_NHIEU and a.max_new_tokens == MAX_NEW_TOKENS_KIEM
+    chinh_thuc = (a.so_cau == SO_CAU and a.so_cau_nhieu == SO_CAU_NHIEU and a.quet_den == KA.M_TOI_DA
+                  and a.max_new_tokens == MAX_NEW_TOKENS_KIEM
                   and not a.bo_fp32)
     # Đọc file hướng TRƯỚC khi đặt tên thư mục: hướng thử → thư mục kiem_hook_thu_… (rà lại pipeline 28/10/2026).
     h = torch.load(a.huong, map_location="cpu")
     if h.get("dac_ta") != dac_ta.ten:
         print(f"DỪNG: file hướng của mô hình {h.get('dac_ta')}, không phải {dac_ta.ten}.")
+        return 1
+    # Hướng phải dựng bằng đúng kiểu attention của đặc tả (rà soát 29/10/2026, R1 B.3, R2 B2): dừng trước khi nạp
+    # mô hình, để không chạy 4d với hướng cũ (vd. hướng Gemma dựng bằng sdpa ngày 28/10).
+    loi_attn = KA.loi_kieu_attention_huong(h, NG.sha256_file(a.huong), dac_ta)
+    if loi_attn:
+        print(f"DỪNG: {loi_attn}.")
         return 1
     huong_thu = not h.get("chinh_thuc", False)
     if huong_thu:
@@ -159,6 +171,15 @@ def main(argv=None) -> int:
         return 3
     with ban_tham_chieu_pytorch(model) as bk:
         log(f"Backend lớp attention tuyến tính, float32: trước {bk.truoc} → trong lượt {bk.sau}")
+        # Quét attention theo độ dài ở float32 (sửa sau kết quả bước 3; Ân duyệt Q-E3 ngày 29/10/2026): không đạt
+        # thì bản thu nhỏ phần 2 không đạt. Không thay luật ba mức.
+        try:
+            X = KA.chuoi_quet(tok, dac_ta, tap.harmless_en + tap.harm_en, a.quet_den + 64)
+            qa32 = KA.quet_attention(model, X, tok.pad_token_id, fp32=True, m_toi_da=a.quet_den)
+        except Exception as e:                                      # noqa: BLE001
+            qa32 = {"trang_thai": "khong_dat", "loi": f"{type(e).__name__}: {e}"}
+        NG.ghi_json(thu_muc / "quet_attention_fp32.json", qa32)
+        log("Quét attention float32: " + (KA.tom_tat(qa32) if "loi" not in qa32 else f"LỖI {qa32['loi']}"))
         kq32 = chay_kiem_hook(model, tok, dac_ta, dv, log)
     kq32["backend_lop_tuyen_tinh"] = {"truoc_khi_chuyen": bk.truoc, "dung_trong_luot": bk.sau}
     NG.ghi_json(thu_muc / "ket_qua_fp32.json", kq32)
@@ -167,6 +188,10 @@ def main(argv=None) -> int:
         log(f"Bộ nhớ GPU đỉnh (float32): {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
 
     kl = ket_luan_hai_kieu_so(kq16, kq32)
+    kl["quet_attention_fp32"] = qa32["trang_thai"]
+    if qa32["trang_thai"] != "dat":
+        kl["dat"] = False
+        kl["trang_thai"] = "khong_dat"
     NG.ghi_json(thu_muc / "ket_luan.json", kl)
     log(f"Kết luận bản thu nhỏ phần 2: {kl}")
     log(f"Trạng thái: {kl['trang_thai']}. Xong sau {(time.time() - bat_dau) / 60:.1f} phút.")

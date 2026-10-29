@@ -302,10 +302,26 @@ def test_cac_script_buoc3_chay_thong(ten, dac_ta, thu_muc_qwen35, thu_muc_gemma4
     k = json.loads((tmp_path / "ra" / dac_ta.ten / "kt" / "kiem_truoc.json").read_text(encoding="utf-8"))
     assert k["khoi_sau_cau_hoi"]["dat"] and k["cau_hinh_sinh"]["la_greedy_dung"] and k["cau_truc_config"]["dat"]
     # Mô hình nhỏ khởi tạo ngẫu nhiên không bao giờ sinh token kết thúc → mã 1, chỉ do thành phần eos.
-    assert NK.main(chung + ["--ten_luot", "nk", "--max_new_tokens", "6", "--so_cau_sinh_thu", "2"]) == 1
+    # Phép quét attention bf16 (Q-E3): trọng số ngẫu nhiên 48 lớp làm nhiễu bf16 giữa hai cách tính attention lớn
+    # (đo 29/10/2026 trên Gemma nhỏ: tới 6,8 logit, trung vị 2,4) nên ở test này nới ngưỡng bf16 để kiểm đường chạy;
+    # ngưỡng thật kiểm riêng ở test_quet_attention_*, và phép quét float32 trong kiểm hook vẫn dùng ngưỡng thật 0,5.
+    import tn2.kiem_attention as KA
+    monkeypatch.setattr(KA, "NGUONG_BF16_KHONG_DAT", 1e9)
+    monkeypatch.setattr(KA, "NGUONG_BF16_CAN_KIEM", 1e9)
+    assert NK.main(chung + ["--ten_luot", "nk", "--max_new_tokens", "6", "--so_cau_sinh_thu", "2",
+                            "--quet_den", "40"]) == 1
     nk = json.loads((tmp_path / "ra" / dac_ta.ten / "nk" / "nap_kiem.json").read_text(encoding="utf-8"))
     tp = nk["dat_thanh_phan"]
     assert tp.pop("co_cau_cham_eos_chinh") is False and all(tp.values()), nk["dat_thanh_phan"]
+    qa = nk["quet_attention"]
+    assert qa["trang_thai"] == "dat" and qa["kieu_attention"] == dac_ta.attn_implementation
+    assert [r["m"] for r in qa["don"]] == list(range(2, 41)) and [r["do_dai_dem"] for r in qa["lo"]] == [33]
+    assert len(qa["lo_thuc"]) == 4 and [r["do_dai_dem"] for r in qa["cache"]] == [33]
+    assert nk["kieu_attention"]["dang_dung"] == nk["kieu_attention"]["dac_ta"] == dac_ta.attn_implementation
+    mnk = json.loads((tmp_path / "ra" / dac_ta.ten / "nk" / "meta.json").read_text(encoding="utf-8"))
+    assert mnk["mo_hinh"]["attn_implementation"] == dac_ta.attn_implementation
+    monkeypatch.setattr(KA, "NGUONG_BF16_KHONG_DAT", 5.0)
+    monkeypatch.setattr(KA, "NGUONG_BF16_CAN_KIEM", 2.0)
     assert nk["sinh_thu"]["eos_chinh"] == dac_ta.eos_du_kien[0][0]
     rc_dh = DH.main(chung + ["--ten_luot", "dh", "--gioi_han", "6", "--co_lo", "4"])
     huong = tmp_path / "ra" / dac_ta.ten / "dh" / "huong.pt"
@@ -314,6 +330,7 @@ def test_cac_script_buoc3_chay_thong(ten, dac_ta, thu_muc_qwen35, thu_muc_gemma4
     assert h["trang_thai"] == ("can_xem" if h["canh_bao_dem"] else "dat")
     assert h["dac_ta"] == dac_ta.ten and h["r_hat_en"].shape == (dac_ta.so_lop, 32)
     assert h["chinh_thuc"] is False and h["position_ids_theo_mat_na"] is True   # --gioi_han → lượt thử; luôn B
+    assert h["attn_implementation"] == dac_ta.attn_implementation             # Q-E2: ghi kiểu attention đã dùng
     kh = torch.load(tmp_path / "ra" / dac_ta.ten / "dh" / "kich_hoat_vi_tri_lay.pt")
     assert kh["harm_vi"].shape == (6, dac_ta.so_lop, 32) and len(kh["id_harm"]) == 6
     assert not [p for p in (tmp_path / "ra" / dac_ta.ten / "dh").iterdir() if p.name.startswith(".")]
@@ -334,11 +351,15 @@ def test_cac_script_buoc3_chay_thong(ten, dac_ta, thu_muc_qwen35, thu_muc_gemma4
     assert DH.main(chung + ["--ten_luot", "dh_ct"]) == 1
     assert not (tmp_path / "ra" / dac_ta.ten / "dh_ct" / "huong.pt").exists()
     rc = KH.main(chung + ["--ten_luot", "kh", "--huong", str(huong), "--so_cau", "2", "--so_cau_nhieu", "32",
-                          "--max_new_tokens", "6"])
+                          "--max_new_tokens", "6", "--quet_den", "40"])
     assert rc == 0
     kl = json.loads((tmp_path / "ra" / dac_ta.ten / "kh" / "ket_luan.json").read_text(encoding="utf-8"))
-    assert kl["trang_thai"] == "dat"
+    assert kl["trang_thai"] == "dat" and kl["quet_attention_fp32"] == "dat"
+    qa32 = json.loads((tmp_path / "ra" / dac_ta.ten / "kh" / "quet_attention_fp32.json").read_text(encoding="utf-8"))
+    assert qa32["fp32"] is True and qa32["lech_lon_nhat"] <= 0.5 and [r["do_dai_dem"] for r in qa32["lo"]] == [33]
+    assert "lo_thuc" not in qa32 and "cache" not in qa32
     meta = json.loads((tmp_path / "ra" / dac_ta.ten / "kh" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["mo_hinh"]["attn_implementation"] == dac_ta.attn_implementation
     assert meta["chinh_thuc"] is False and meta["huong_chinh_thuc"] is False      # hướng thử → lượt thử
     for kt in ("bf16", "fp32"):                                                   # chẩn đoán Q5 có mặt và khớp
         kq = json.loads((tmp_path / "ra" / dac_ta.ten / "kh" / f"ket_qua_{kt}.json").read_text(encoding="utf-8"))
@@ -481,3 +502,40 @@ def test_thu_muc_moi_khong_dung_chung(tmp_path):
     assert p.is_dir()
     with pytest.raises(FileExistsError):
         NG.thu_muc_moi(tmp_path / "ra", "dung_huong_20261028_120000")
+
+
+def test_quet_attention_khong_dat_chan_4b_va_4d(thu_muc_qwen35, tmp_path, monkeypatch):
+    """Nối cổng (rà soát độc lập 29/10/2026): quét attention khong_dat → nap_kiem không đạt (mã 1, thành phần
+    quet_attention_khong_loi_tho False); quét float32 khong_dat → kiểm hook khong_dat (mã 1) dù phần kiểm hook đạt."""
+    import buoc3_dung_huong as DH
+    import buoc3_kiem_hook as KH
+    import buoc3_nap_kiem as NK
+    import tn2.kiem_attention as KA
+    for m in (DH, KH, NK):
+        monkeypatch.setattr(m, "device_map_mot_gpu", lambda: None)
+    goc_quet = KA.quet_attention
+
+    def quet_hong(model, X, pad, fp32, **k):
+        kq = goc_quet(model, X, pad, fp32, **k)
+        return kq | {"trang_thai": "khong_dat", "do_dai_sai": [33]}
+    monkeypatch.setattr(KA, "quet_attention", quet_hong)
+    ra = tmp_path / "ra"
+    chung = ["--mo_hinh_dac_ta", "qwen35_9b", "--mo_hinh", str(thu_muc_qwen35), "--ra", str(ra)]
+    assert NK.main(chung + ["--ten_luot", "nk", "--max_new_tokens", "6", "--so_cau_sinh_thu", "2",
+                            "--quet_den", "40"]) == 1
+    nk = json.loads((ra / "qwen35_9b" / "nk" / "nap_kiem.json").read_text(encoding="utf-8"))
+    assert nk["dat"] is False and nk["dat_thanh_phan"]["quet_attention_khong_loi_tho"] is False
+    assert nk["dat_thanh_phan"]["kieu_attention_dung_dac_ta"] is True
+    DH.main(chung + ["--ten_luot", "dh", "--gioi_han", "6", "--co_lo", "4"])
+    huong = ra / "qwen35_9b" / "dh" / "huong.pt"
+    rc = KH.main(chung + ["--ten_luot", "kh", "--huong", str(huong), "--so_cau", "2", "--so_cau_nhieu", "32",
+                          "--max_new_tokens", "6", "--quet_den", "40"])
+    kl = json.loads((ra / "qwen35_9b" / "kh" / "ket_luan.json").read_text(encoding="utf-8"))
+    assert rc == 1 and kl["trang_thai"] == "khong_dat" and kl["dat"] is False
+    assert kl["quet_attention_fp32"] == "khong_dat"
+    # lỗi ngay trong phép quét (vd. hết bộ nhớ) → cũng không đạt, không traceback
+    monkeypatch.setattr(KA, "quet_attention", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("het bo nho")))
+    assert NK.main(chung + ["--ten_luot", "nk2", "--max_new_tokens", "6", "--so_cau_sinh_thu", "2",
+                            "--quet_den", "40"]) == 1
+    nk2 = json.loads((ra / "qwen35_9b" / "nk2" / "nap_kiem.json").read_text(encoding="utf-8"))
+    assert nk2["quet_attention"]["trang_thai"] == "khong_dat" and "het bo nho" in nk2["quet_attention"]["loi"]

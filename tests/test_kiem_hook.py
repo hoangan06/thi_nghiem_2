@@ -147,3 +147,37 @@ def test_luat_ba_muc_trong_chay_kiem_hook(tok_llama, llama_f32, monkeypatch):
     assert cd["so_vi_tri_vuot_nguong"] > 0 and not cd["nghi_loi_co_che"]     # chỉ là nhiễu: không nghi lỗi
     kl = ket_luan_hai_kieu_so({"tong_ket": t}, {"tong_ket": t})
     assert kl["trang_thai"] in ("can_xem", "khong_dat") and not kl["dat"]
+
+
+def test_logit_khong_huu_han_lam_kiem_hook_dung():
+    """T2 (Ân duyệt 29/10/2026): NaN / Inf ở bất kỳ phía nào của phép so → dừng, không kết luận."""
+    import pytest
+
+    from tn2.kiem_hook import _lech_theo_vi_tri
+    a, b = torch.zeros(3, 5), torch.zeros(3, 5)
+    assert _lech_theo_vi_tri(a, b) == [0.0, 0.0, 0.0]
+    for gia_tri in (float("nan"), float("inf")):
+        for phia in (0, 1):
+            x, y = a.clone(), b.clone()
+            (x if phia == 0 else y)[1, 2] = gia_tri
+            with pytest.raises(ValueError):
+                _lech_theo_vi_tri(x, y)
+
+
+def test_nan_chi_o_luot_alpha_khac_0_lam_kiem_hook_dung(tok_llama, llama_f32, monkeypatch):
+    """R2 B.3: NaN chỉ xuất hiện ở cách tính tham chiếu của lượt có can thiệp (α ≠ 0) — trước khi sửa, kết luận vẫn
+    'dat' vì max() bỏ qua NaN. Giờ chay_kiem_hook dừng bằng ValueError."""
+    import pytest
+
+    import tn2.kiem_hook as KH
+    goc = KH.logit_tham_chieu
+
+    def nan_khi_co_vector(model, ids, tiep, lop, vec, k, so_sinh):
+        out = goc(model, ids, tiep, lop, vec, k, so_sinh)
+        if vec is not None and bool(vec.abs().sum() > 0):
+            out = out.clone()
+            out[-1, 0] = float("nan")
+        return out
+    monkeypatch.setattr(KH, "logit_tham_chieu", nan_khi_co_vector)
+    with pytest.raises(ValueError):
+        chay_kiem_hook(llama_f32, tok_llama, LLAMA3_8B, _dv(lop=(16,), so_nhieu=4))

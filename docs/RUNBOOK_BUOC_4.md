@@ -29,6 +29,18 @@ Mỗi đơn vị gồm khoảng 256 bước sinh ở lô 40, tức 10–15 giây
 | Cả hai | khoảng 3 giờ 30 đến 5 giờ, chưa tính phần dựng máy |
 
 Con số sát hơn: `uoc_gio_gpu_buoc4` trong `toc_do.json` của bước 4e (đúng số câu của kế hoạch, tốc độ đo ở lô 40).
+Đo ngày 28/10/2026 trên A100 80 GB: Qwen khoảng 1,5–1,8 giờ; Gemma khoảng 2,5 giờ bằng `sdpa`. Gemma giờ chạy bằng
+`eager`, nên dùng số của lượt 4e mới.
+
+**Cập nhật 29/10/2026 (Ân duyệt Q-E1 đến Q-E6).** Lượt thuê tiếp theo làm theo `RUNBOOK_LUOT_THUE_TIEP.md`. Thay đổi
+ở bước 4:
+- cổng mã 4 so thêm kiểu attention: mô hình đang nạp phải đúng đặc tả (Gemma `eager`, Qwen `sdpa`) và trùng lượt kiểm
+  hook bước 3. Lượt kiểm hook thiếu trường này chỉ được nhận theo ngoại lệ hẹp cho lượt Qwen ngày 28/10
+  (`NGOAI_LE_ATTN_CU` trong `scripts/buoc4_hieu_chinh.py`); log ghi `CHÚ Ý … suy ra`;
+- cổng mã 8 so **họ** GPU (mọi A100 là một họ) và kiểu attention, thay cho tên GPU đầy đủ;
+- bước 4 chỉ chạy bf16, nên có thể dùng A100 40 GB, nhưng chỉ khi bộ nhớ đỉnh ở lô 40 trong `toc_do.json` mới còn dư
+  rõ. Lô 40 của Gemma đo 30,8 GiB reserved với `sdpa`, trên lô benchmark ngắn hơn lô bước 4 (bước 4 đệm tới 81 token);
+  chưa đo với `eager`. Không chắc thì thuê 80 GB: hết bộ nhớ giữa lượt thì phải sang thư mục mới (mã 6).
 
 ## 0. Điều kiện trước khi chạy
 
@@ -96,8 +108,8 @@ dấu vân tay mã nguồn tính trên mọi file `.py` trong `src/` và `script
    ```
 
    (Chép từ một git worktree thì `commit_kho` của các phiên trên máy mới ghi rỗng; dấu vân tay mã nguồn vẫn được ghi.)
-4. Thuê **cùng loại GPU** với phiên đầu của lượt (tên GPU trong `moi_truong_goc.json` phải trùng, nếu không script dừng
-   mã 8). Dựng môi trường và tải mô hình theo mục 2 và mục 3 của `RUNBOOK_BUOC_3.md`, nhánh **"máy thứ hai trở
+4. Thuê GPU **họ A100** như phiên đầu của lượt (`ho_gpu` trong `moi_truong_goc.json` phải trùng, nếu không script dừng
+   mã 8; SXM4 hay PCIe, 40 hay 80 GB đều được). Dựng môi trường và tải mô hình theo mục 2 và mục 3 của `RUNBOOK_BUOC_3.md`, nhánh **"máy thứ hai trở
    đi"**: hàm `may_moi <mô hình>` (thêm `--thu_muc <thư mục>` nếu lượt không ở thư mục mặc định) in đúng lệnh cài từng gói (theo phiên bản ghi ở lượt kiểm hook bước 3 mà `b4` sẽ dùng)
    và đúng dòng `hf download … --revision <commit>`; `HF_HUB_OFFLINE=1` chỉ bật sau khi tải xong. Backend kernel và
    phiên bản gói khác lượt kiểm hook thì script dừng mã 4 và in khác ở
@@ -105,7 +117,18 @@ dấu vân tay mã nguồn tính trên mọi file `.py` trong `src/` và `script
    chạy cả 4e). Lượt bước 4 mới: `b4` tự lấy kiểm hook mới nhất. Lượt bước 4 đã có đơn vị: truyền rõ
    `b4 <mô hình> --kiem_hook <thư mục kiểm hook mới>` (thư mục được ghi vào `phien.jsonl`); vì môi trường đã khác
    phiên đầu, script sẽ dừng mã 8: hỏi Ân trước khi dùng `--cho_phep_doi_moi_truong`.
-5. Bật lại vòng `rsync` định kỳ (`RUNBOOK_BUOC_3.md`, mục 4) với máy mới, rồi chạy `b4` như mục 2.
+5. Chạy `kiem_nap` cho từng mô hình trên máy mới (5–10 phút mỗi mô hình; phép quét attention chạy trên đúng GPU sẽ
+   dùng). Phải mã 0 và dòng `Quét attention:` ghi `→ dat` cho cả hai mô hình; khác thì dừng, báo Ân (luật đi tiếp ở
+   `RUNBOOK_LUOT_THUE_TIEP.md` chỉ dành cho lần thuê làm lại bước 3, không áp khi đổi máy giữa bước 4):
+
+   ```bash
+   b3 qwen35_9b kiem_nap
+   ```
+
+   ```bash
+   b3 gemma4_12b kiem_nap
+   ```
+6. Bật lại vòng `rsync` định kỳ (`RUNBOOK_BUOC_3.md`, mục 4) với máy mới, rồi chạy `b4` như mục 2.
 
 Mỗi cửa sổ tmux mới, kể cả sau khi máy khởi động lại: `. /workspace/env_b3.sh` (nạp môi trường, `HF_HUB_OFFLINE=1`, và
 các hàm `b3`, `b4`, `gop4`, `may_moi` từ `scripts/ham_b.sh`). Script tự nạp đúng commit Hugging Face ghi trong `huong.pt` và dừng
@@ -119,6 +142,8 @@ Nếu `nvidia-smi` không có tiến trình nào của mình mà bộ nhớ đã
 
 ```bash
 . /workspace/env_b3.sh
+```
+```bash
 b4 qwen35_9b; b4 gemma4_12b
 ```
 
@@ -142,8 +167,8 @@ theo các nguyên tắc sau:
 - Đơn vị viết dở hoặc hỏng thì chuyển sang `hong/` rồi sinh lại, không xoá file nào.
 - Nếu thư mục đã có một lượt với cấu hình khác thì dừng (mã 6), không ghi đè. Cấu hình ở đây gồm file hướng, commit mô
   hình, cách chia tập, dữ liệu, tham số, file quyết định (nếu có) và mã nguồn.
-- Nếu phiên này khác phiên đầu về môi trường số học thì dừng (mã 8). Môi trường số học gồm tên GPU, torch, CUDA,
-  transformers, tokenizers, gói kernel, backend lớp DeltaNet và kiểu số. Lý do: lượt nền và lượt can thiệp được so theo
+- Nếu phiên này khác phiên đầu về môi trường số học thì dừng (mã 8). Môi trường số học gồm họ GPU, torch, CUDA,
+  transformers, tokenizers, gói kernel, backend lớp DeltaNet, kiểu attention và kiểu số. Lý do: lượt nền và lượt can thiệp được so theo
   cặp trên từng câu, nên phải sinh trong cùng môi trường. Chỉ dùng `--cho_phep_doi_moi_truong` khi Ân đồng ý; việc này
   được ghi lại.
 - Chỉ một tiến trình được chạy một lượt, có khoá. Tiến trình cũ còn chạy thì lệnh mới dừng mã 9.
@@ -182,13 +207,13 @@ kể cả log). Mất máy hẳn thì chỉ mất phần sinh sau lần `rsync` 
 | Mã | Nghĩa | Làm gì |
 |---|---|---|
 | 0 | Hoàn tất (hoặc đã hoàn tất từ trước) | Sang mục 3 |
-| 1 | Lỗi; hoặc `--chi_gop` mà còn đơn vị chưa xong / chưa có lượt | Kéo `results/` về (log có traceback), dừng |
+| 1 | Lỗi (kể cả transformers không nạp đúng kiểu attention của đặc tả: `ValueError` khi nạp); hoặc `--chi_gop` mà còn đơn vị chưa xong / chưa có lượt | Kéo `results/` về (log có traceback), dừng |
 | 2 | Khối sau câu hỏi lệch, hoặc cấu hình sinh không phải greedy | Dừng, không sửa code trên máy thuê |
 | 3 | Mô hình không nằm trọn một GPU | Dừng, kiểm lại máy |
-| 4 | Đầu vào không dùng được: file chia tập khác hoặc không đạt; file hướng / kiểm hook của bước 3 không đạt, hoặc "cần xem" mà chưa có file quyết định; mô hình nạp không xác minh được commit hoặc khác commit của file hướng; backend kernel, phiên bản gói khác lượt kiểm hook bước 3 | Đọc thông báo DỪNG; trường hợp môi trường khác: mục 1, cách 2 |
+| 4 | Đầu vào không dùng được: file chia tập khác hoặc không đạt; file hướng / kiểm hook của bước 3 không đạt, hoặc "cần xem" mà chưa có file quyết định; mô hình nạp không xác minh được commit hoặc khác commit của file hướng; backend kernel, phiên bản gói khác lượt kiểm hook bước 3; kiểu attention khác lượt kiểm hook, hoặc lượt kiểm hook không ghi kiểu attention (ngoài ngoại lệ Qwen 28/10); file hướng không dựng bằng kiểu attention của đặc tả (thiếu trường chỉ nhận hướng Qwen 28/10) | Đọc thông báo DỪNG; trường hợp môi trường khác: mục 1, cách 2; thiếu kiểu attention: chạy lại kiểm hook bằng code hiện tại |
 | 6 | Thư mục đã có một lượt khác | Không ghi đè. Đọc thông báo; đừng dùng `--cho_phep_doi_ma_nguon` nếu chưa hỏi Ân |
 | 7 | Dừng theo `--so_don_vi_toi_da` | Chạy lại để tiếp |
-| 8 | Môi trường số học khác phiên đầu (kể cả tên GPU) | Dừng. Hỏi Ân; xem `moi_truong_goc.json` và dòng cuối `phien.jsonl` |
+| 8 | Môi trường số học khác phiên đầu (kể cả họ GPU, kiểu attention) | Dừng. Hỏi Ân; xem `moi_truong_goc.json` và dòng cuối `phien.jsonl` |
 | 9 | Một tiến trình khác đang chạy cùng lượt; hoặc còn đơn vị phải sinh mà hệ file không hỗ trợ khoá | Kiểm `tmux ls` và `nvidia-smi`, không chạy song song; trường hợp sau: chạy trên ổ cục bộ |
 
 ## 3. Kéo kết quả về, kiểm, lưu trữ, rồi huỷ máy

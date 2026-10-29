@@ -35,6 +35,10 @@ Cách chạy: `docs/RUNBOOK_BUOC_3.md` (hàm `b3`, `b4`, `gop4`, `may_moi` trong
 
 Cách chạy: `docs/RUNBOOK_BUOC_4.md`.
 
+Sửa sau kết quả bước 3 (Ân duyệt 29/10/2026): Gemma 4 12B nạp bằng attention `eager` (lỗi kernel sdpa của PyTorch
+2.11 ở độ dài ≡ 1 mod 32), Qwen3.5-9B giữ `sdpa`; 4b và 4d có phép quét attention theo độ dài; mọi A100 là cùng loại
+GPU. Lượt thuê tiếp theo: `docs/RUNBOOK_LUOT_THUE_TIEP.md`.
+
 ## Test (CPU, không tải gì từ mạng)
 
 ```bash

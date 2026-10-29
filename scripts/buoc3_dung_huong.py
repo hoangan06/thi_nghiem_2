@@ -13,7 +13,7 @@ Trình tự:
    cosine en–vi (ước lượng điểm, chỉ mô tả).
 Ghi ra results/buoc3/<mô hình>/<ten_luot>/:
   huong.pt                 — r̂, ‖r‖, s, độ lớn tương đối, hướng ở token cuối thật, chia đôi, cosine (CPU, float64);
-                             kèm dac_ta, commit_hf, position_ids_theo_mat_na, chinh_thuc, canh_bao_dem, trang_thai
+                             kèm dac_ta, commit_hf, attn_implementation, position_ids_theo_mat_na, chinh_thuc, canh_bao_dem, trang_thai
   kich_hoat_vi_tri_lay.pt  — kích hoạt từng câu ở vị trí lấy, mọi lớp ([128, L, d] × 4, kiểu số của mô hình)
   tom_tat.json, do_position_ids.json, meta.json, nhat_ky.txt
 Mã thoát: 0 xong; 4 xong nhưng "cần xem" (cảnh báo đệm bật: KHÔNG dùng hướng này cho bước 4 trước khi Ân xem
@@ -116,6 +116,7 @@ def main(argv=None) -> int:
     t = kq["tensor"]
     t["dac_ta"] = dac_ta.ten
     t["commit_hf"] = meta["mo_hinh"]["commit_hf"]
+    t["attn_implementation"] = meta["mo_hinh"].get("attn_implementation")    # Q-E2, Ân duyệt 29/10/2026
     t["position_ids_theo_mat_na"] = True
     t["chinh_thuc"] = chinh_thuc
     t["canh_bao_dem"] = dp["canh_bao_dem"]

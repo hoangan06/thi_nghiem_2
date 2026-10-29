@@ -48,6 +48,11 @@ class DacTaMoHinh:
     eos_du_kien: tuple[tuple[int, str], ...] = ()
     # Năm lớp đại diện của tập hiệu chỉnh (Nhap 3.4): độ sâu ~20, 35, 50, 65, 80 %, có cả hai kiểu lớp.
     lop_hieu_chinh: tuple[int, ...] = ()
+    # Kiểu attention của phần chữ khi nạp (truyền cho from_pretrained; None = mặc định của transformers). Ghi tường
+    # minh cho hai mô hình chính sau kết quả bước 3 (Ân duyệt 29/10/2026): kernel EFFICIENT_ATTENTION của sdpa trong
+    # PyTorch 2.11 cho kết quả sai ở Gemma 4 (k/v stride 0 của lớp full attention 1 KV head, độ dài ≡ 1 mod 32;
+    # PyTorch issue #191937, transformers issue #47651), nên Gemma 4 chạy eager; Qwen3.5 giữ sdpa (đã qua kiểm hook).
+    attn_implementation: str | None = None
 
 
 LLAMA3_8B = DacTaMoHinh(
@@ -93,6 +98,7 @@ QWEN35_9B = DacTaMoHinh(
     eos_du_kien=((248046, "<|im_end|>"), (248044, "<|endoftext|>")),
     # Nhap 3.4: theo ℓ/L, riêng lớp 15 (thay cho 16) để có một lớp full attention gần 50 %.
     lop_hieu_chinh=(6, 11, 15, 21, 26),
+    attn_implementation="sdpa",
 )
 
 GEMMA4_12B = DacTaMoHinh(
@@ -114,6 +120,7 @@ GEMMA4_12B = DacTaMoHinh(
     eos_du_kien=((106, "<turn|>"),),
     # Nhap 3.4: theo ℓ/(L−1).
     lop_hieu_chinh=(9, 16, 23, 31, 38),
+    attn_implementation="eager",       # xem chú thích của trường attn_implementation
 )
 
 CAC_MO_HINH = {d.ten: d for d in (LLAMA3_8B, QWEN35_9B, GEMMA4_12B)}
@@ -192,7 +199,11 @@ def nap_mo_hinh(dac_ta: DacTaMoHinh, duong_dan: str | None = None, dtype: torch.
     tok.padding_side = "left"
     if dac_ta.pad_bang_eos or tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(nguon, dtype=dtype, device_map=device_map, revision=revision)
+    them = {"attn_implementation": dac_ta.attn_implementation} if dac_ta.attn_implementation else {}
+    model = AutoModelForCausalLM.from_pretrained(nguon, dtype=dtype, device_map=device_map, revision=revision, **them)
+    if dac_ta.attn_implementation and kieu_attention(model) != dac_ta.attn_implementation:
+        raise ValueError(f"{dac_ta.ten}: đặc tả đòi attention {dac_ta.attn_implementation!r}, mô hình nạp xong dùng "
+                         f"{kieu_attention(model)!r}.")
     if getattr(model.config, "_commit_hash", None) is None:
         # Qwen3.5 là checkpoint ghép (ảnh + chữ): AutoModelForCausalLM nạp Qwen3_5ForCausalLM với config con
         # (get_text_config()), mà config con không mang _commit_hash, nên commit ghi lại sẽ là None dù nạp đúng id và
@@ -206,6 +217,18 @@ def nap_mo_hinh(dac_ta: DacTaMoHinh, duong_dan: str | None = None, dtype: torch.
     if so_lop != dac_ta.so_lop:
         raise ValueError(f"{dac_ta.ten}: mô hình có {so_lop} lớp, đặc tả ghi {dac_ta.so_lop}.")
     return model, tok
+
+
+def kieu_attention(model) -> str | None:
+    """Kiểu attention thực dùng của phần chữ (config.get_text_config()._attn_implementation), ví dụ "sdpa", "eager"."""
+    cfg = getattr(model, "config", None)
+    if cfg is None:
+        return None
+    try:
+        cfg = cfg.get_text_config()
+    except Exception:                                   # noqa: BLE001
+        pass
+    return getattr(cfg, "_attn_implementation", None)
 
 
 def phan_bo_thiet_bi(model: torch.nn.Module, can_gpu: bool | None = None) -> dict[str, Any]:

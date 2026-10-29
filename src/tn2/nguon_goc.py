@@ -8,6 +8,7 @@ import datetime as _dt
 import hashlib
 import json
 import math
+import re
 import os
 import platform
 import sys
@@ -89,6 +90,20 @@ def thong_tin_moi_truong() -> dict[str, Any]:
     return tt
 
 
+def ho_gpu(ten: str) -> str:
+    """Họ GPU dùng cho phép so môi trường giữa các phiên: mọi bản A100 (SXM4/PCIe, 40/80 GB; cùng chip GA100, cùng
+    kiến trúc sm80) là "NVIDIA A100"; GPU khác giữ nguyên tên. Ân quyết ngày 29/10/2026: "cùng loại GPU" nghĩa là cùng
+    A100."""
+    t = str(ten)
+    # \bA100\b: không khớp "RTX A1000"; lát MIG (số SM khác) không được coi là cùng họ.
+    return "NVIDIA A100" if re.search(r"\bA100\b", t.upper()) and "MIG" not in t.upper() else t
+
+
+def _kieu_attention(model) -> str | None:
+    from .mo_hinh import kieu_attention
+    return kieu_attention(model)
+
+
 def thong_tin_mo_hinh(model, tok, dac_ta) -> dict[str, Any]:
     cfg = getattr(model, "config", None)
     return {
@@ -96,6 +111,8 @@ def thong_tin_mo_hinh(model, tok, dac_ta) -> dict[str, Any]:
         "nguon": getattr(cfg, "_name_or_path", None),
         "commit_hf": getattr(cfg, "_commit_hash", None),
         "dtype": str(getattr(model, "dtype", None)),
+        # Kiểu attention thực dùng của phần chữ (sửa sau kết quả bước 3, Ân duyệt Q-E2 ngày 29/10/2026).
+        "attn_implementation": _kieu_attention(model),
         "pad_token": tok.pad_token, "pad_token_id": tok.pad_token_id,
         "eos_token": tok.eos_token, "eos_token_id": tok.eos_token_id,
     }

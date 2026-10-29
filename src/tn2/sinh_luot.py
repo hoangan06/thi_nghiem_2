@@ -14,8 +14,8 @@ cùng lệnh là tiếp từ chỗ dừng):
 - Thư mục lượt có ke_hoach.json (kế hoạch + dấu vân tay của mọi thứ quyết định đầu ra: đặc tả, commit HF của mô
   hình, SHA file hướng, SHA cách chia tập và dữ liệu, tham số sinh, danh sách đơn vị, mã nguồn). Chạy lại cùng
   thư mục: dấu vân tay phải khớp; không khớp mà đã có đơn vị sinh xong thì dừng, không đụng vào file nào.
-- moi_truong_goc.json: môi trường số học của phiên đầu tiên sinh đơn vị (torch, transformers, CUDA, GPU, backend
-  lớp attention tuyến tính, kiểu số). Phiên sau khác môi trường thì dừng (lượt nền và lượt can thiệp được so theo
+- moi_truong_goc.json: môi trường số học của phiên đầu tiên sinh đơn vị (torch, transformers, CUDA, họ GPU — mọi bản
+  A100 là một họ —, backend lớp attention tuyến tính, kiểu attention, kiểu số). Phiên sau khác môi trường thì dừng (lượt nền và lượt can thiệp được so theo
   cặp trên từng câu), trừ khi cho phép rõ ràng; mỗi .xong.json ghi số phiên và dấu vân tay môi trường.
 - Mỗi đơn vị ghi <ma>.jsonl qua file tạm + fsync + os.replace (không bao giờ có file kết quả viết dở), rồi ghi
   <ma>.xong.json (SHA, số dòng). Đơn vị chỉ tính là xong khi có cả hai và SHA, số dòng, id khớp.

@@ -19,8 +19,8 @@ buộc; bản thu nhỏ phần 2 của bước 3 (--kiem_hook) đạt với đú
 --quyet_dinh_can_xem: file quyết định của Ân, được chép vào thư mục lượt và vào dấu vân tay);
 file hướng của đúng mô hình, trạng thái "dat", lượt chính thức, dựng theo position_ids của mặt nạ; commit HF khớp
 mô hình đang nạp (mặc định nạp đúng commit ghi trong file hướng); mô hình nằm trọn một GPU; khối 9 token và vị trí
-lấy −5 trên mọi câu sẽ dùng; cấu hình sinh hiệu lực là greedy; backend kernel và phiên bản gói trùng lượt kiểm hook
-của bước 3; môi trường số học giống phiên đầu (nếu là phiên tiếp).
+lấy −5 trên mọi câu sẽ dùng; cấu hình sinh hiệu lực là greedy; backend kernel, phiên bản gói và kiểu attention trùng
+lượt kiểm hook của bước 3 (kiểu attention cũng phải đúng đặc tả); môi trường số học giống phiên đầu (nếu là phiên tiếp).
 
 Ghi ra results/buoc4/<mô hình>/hieu_chinh/ (cố định, để chạy lại là tiếp; xem tn2.sinh_luot):
   ke_hoach.json, moi_truong_goc.json, phien.jsonl, nhat_ky.txt, don_vi/<mã>.jsonl + <mã>.xong.json;
@@ -49,9 +49,10 @@ from _chung import GOC, NhatKy, chon_dac_ta, device_map_mot_gpu
 
 import torch
 
+from tn2 import kiem_attention as KA
 from tn2 import nguon_goc as NG
 from tn2.buoc3.nap_kiem import kiem_khoi_tokenizer
-from tn2.mo_hinh import backend_lop_tuyen_tinh, eos_tu_mo_hinh, nap_mo_hinh, phan_bo_thiet_bi
+from tn2.mo_hinh import backend_lop_tuyen_tinh, eos_tu_mo_hinh, kieu_attention, nap_mo_hinh, phan_bo_thiet_bi
 from tn2.sinh_luot import (ALPHA_MO_RONG, LUOI_ALPHA_HIEU_CHINH, MAX_NEW_TOKENS, DangChay, KhoKetQua, chay_ke_hoach,
                            bam_moi_truong, da_hoan_tat, dau_van_tay_ma_nguon, doi_sau_hoan_tat, ke_hoach_hieu_chinh,
                            kiem_ke_hoach, phan_cua, ghi_nguyen_tu, sha256_chuoi, tong_hop_cuoi, tong_hop_phan)
@@ -107,7 +108,8 @@ def _cau_theo_tap(gioi_han: int | None) -> dict[str, list[dict]]:
     return ra
 
 
-def _kiem_huong(h: dict, dac_ta, thu: bool, co_quyet_dinh: bool = False) -> list[str]:
+def _kiem_huong(h: dict, dac_ta, thu: bool, co_quyet_dinh: bool = False,
+                huong_sha: str | None = None) -> list[str]:
     loi = []
     if h.get("dac_ta") != dac_ta.ten:
         loi.append(f"file hướng của {h.get('dac_ta')}, không phải {dac_ta.ten}")
@@ -125,6 +127,9 @@ def _kiem_huong(h: dict, dac_ta, thu: bool, co_quyet_dinh: bool = False) -> list
         if not h.get("commit_hf"):
             loi.append("file hướng không ghi commit Hugging Face của mô hình: không xác minh được mô hình sẽ nạp "
                        "(rà soát bước 4, R2 B1)")
+        loi_attn = KA.loi_kieu_attention_huong(h, huong_sha, dac_ta)      # rà soát 29/10/2026, R1 B.3, R2 B2
+        if loi_attn:
+            loi.append(loi_attn)
     for k in ("r_hat_en", "r_hat_vi", "s"):
         if k not in h:
             loi.append(f"thiếu khoá {k}")
@@ -171,17 +176,48 @@ def _chuan_backend(d) -> dict | None:
     return {k: (str(v.get("cai_dat")), v.get("la_ban_tham_chieu")) for k, v in d.items()}
 
 
+# Ngoại lệ hẹp cho lượt kiểm hook của Qwen3.5-9B ngày 28/10/2026, chạy bằng code trước khi meta ghi kiểu attention
+# (Ân duyệt Q-E2 ngày 29/10/2026, ghép ý hai reviewer): chỉ áp khi khớp đủ commit kho, commit mô hình, SHA file
+# hướng, đặc tả khai báo sdpa và mô hình đang nạp dùng sdpa. Căn cứ: code commit e61aa007 không đặt
+# attn_implementation (transformers mặc định sdpa), và nhật ký chẩn đoán trên chính máy đó ghi "qwen35_9b … attention
+# sdpa" (results/buoc3/chan_doan_sdpa_20261028_102113/nhat_ky.txt). Mọi lượt khác thiếu trường thì dừng.
+NGOAI_LE_ATTN_CU = ({"dac_ta": "qwen35_9b", "commit_kho": "e61aa0079cf94671e28516b1631d3d204f8b8b13",
+                     "commit_hf": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+                     "huong_sha256": KA.HUONG_SDPA_CU["qwen35_9b"],
+                     "attn_implementation": "sdpa",
+                     "can_cu": "results/buoc3/chan_doan_sdpa_20261028_102113/nhat_ky.txt: qwen35_9b … attention sdpa"},)
+
+
+def _attn_buoc3(meta: dict) -> tuple[str | None, str | None]:
+    """(kiểu attention của lượt kiểm hook, căn cứ nếu là suy ra theo ngoại lệ). Không xác định được → (None, None)."""
+    mh = meta.get("mo_hinh") if isinstance(meta.get("mo_hinh"), dict) else {}
+    if "attn_implementation" in mh:
+        return mh["attn_implementation"], None
+    mt = meta.get("moi_truong") if isinstance(meta.get("moi_truong"), dict) else {}
+    ts = meta.get("tham_so") if isinstance(meta.get("tham_so"), dict) else {}
+    for ng in NGOAI_LE_ATTN_CU:
+        if (meta.get("dac_ta") == ng["dac_ta"] and mt.get("commit_kho") == ng["commit_kho"]
+                and mh.get("commit_hf") == ng["commit_hf"] and ts.get("huong_sha256") == ng["huong_sha256"]):
+            return ng["attn_implementation"], ng["can_cu"]
+    return None, None
+
+
 def doi_chieu_buoc3(meta: dict | None, tt_moi_truong: dict, backend: dict, commit_hf: str | None,
-                    thu: bool) -> dict:
+                    thu: bool, attn: str | None = None, attn_dac_ta: str | None = None) -> dict:
     """So môi trường của phiên bước 4 này với lượt kiểm hook bước 3 đã đạt (meta.json của nó): backend kernel bf16
     của lớp attention tuyến tính, phiên bản các gói số học, commit mô hình. Khác → "khac" không rỗng → script
     dừng mã 4 (không có cờ vượt: chạy lại kiểm hook bước 3 trên máy này). Tên GPU khác → chỉ ghi "gpu_khac".
+    Kiểu attention (Q-E2, Ân duyệt 29/10/2026): mô hình đang nạp phải dùng đúng kiểu của đặc tả và của lượt kiểm hook;
+    meta thiếu trường thì chỉ chấp nhận ngoại lệ NGOAI_LE_ATTN_CU, ghi căn cứ vào "attn_suy_ra".
     Lượt thử (--thu) không có meta hoặc meta thiếu trường thì bỏ qua phần đó."""
-    if meta is None:
-        return {"bo_qua": True, "khac": [], "gpu_khac": None}
-    if not isinstance(meta, dict):
-        return {"bo_qua": False, "khac": ["meta kiểm hook không đúng dạng"], "gpu_khac": None}
     khac: list[str] = []
+    if attn_dac_ta is not None and attn != attn_dac_ta:
+        khac.append(f"kiểu attention: đặc tả {attn_dac_ta!r}, mô hình đang nạp {attn!r}")
+    if meta is None:
+        return {"bo_qua": True, "khac": khac, "gpu_khac": None, "attn_suy_ra": None}
+    if not isinstance(meta, dict):
+        return {"bo_qua": False, "khac": khac + ["meta kiểm hook không đúng dạng"], "gpu_khac": None,
+                "attn_suy_ra": None}
     mt3 = meta.get("moi_truong")
     if not isinstance(mt3, dict):
         mt3 = None
@@ -203,8 +239,15 @@ def doi_chieu_buoc3(meta: dict | None, tt_moi_truong: dict, backend: dict, commi
     c3 = mh3.get("commit_hf") if isinstance(mh3, dict) else None
     if (c3 is not None or not thu) and c3 != commit_hf:
         khac.append(f"commit mô hình: bước 3 {c3!r}, bây giờ {commit_hf!r}")
+    a3, suy_ra = _attn_buoc3(meta)
+    if a3 is None:
+        if not thu:
+            khac.append("meta kiểm hook không ghi kiểu attention (chạy lại kiểm hook bằng code hiện tại)")
+    elif a3 != attn:
+        khac.append(f"kiểu attention: bước 3 {a3!r}, bây giờ {attn!r}")
     g3, g4 = (mt3 or {}).get("gpu"), tt_moi_truong.get("gpu")
-    return {"bo_qua": False, "khac": khac, "gpu_khac": None if g3 == g4 else {"buoc3": g3, "bay_gio": g4}}
+    return {"bo_qua": False, "khac": khac, "gpu_khac": None if g3 == g4 else {"buoc3": g3, "bay_gio": g4},
+            "attn_suy_ra": suy_ra}
 
 
 def main(argv=None) -> int:
@@ -294,11 +337,11 @@ def main(argv=None) -> int:
         qd = {"file_goc": str(a.quyet_dinh_can_xem), "sha256": NG.sha256_file(a.quyet_dinh_can_xem),
               "noi_dung": noi_qd}
     h = torch.load(a.huong, map_location="cpu")
-    loi = _kiem_huong(h, dac_ta, a.thu, co_quyet_dinh=qd is not None)
+    huong_sha = NG.sha256_file(a.huong)
+    loi = _kiem_huong(h, dac_ta, a.thu, co_quyet_dinh=qd is not None, huong_sha=huong_sha)
     if loi:
         print("DỪNG: " + "; ".join(loi))
         return 4
-    huong_sha = NG.sha256_file(a.huong)
     loi, meta_kh = _kiem_kiem_hook(a.kiem_hook, dac_ta, huong_sha, a.thu, co_quyet_dinh=qd is not None)
     if loi:
         print("DỪNG: " + "; ".join(loi))
@@ -369,8 +412,11 @@ def _bao_gop(log, phan: str, r: dict) -> None:
 
 def _moi_truong_so_hoc(model, tt_moi_truong: dict) -> dict:
     """Những gì có thể làm đầu ra số học khác đi giữa hai phiên (so với phiên đầu)."""
-    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
-    return {"torch": torch.__version__, "cuda": torch.version.cuda, "gpu": gpu,
+    # Họ GPU, không phải tên đầy đủ (Ân quyết 29/10/2026: "cùng loại GPU" là cùng A100; A100 SXM4/PCIe, 40/80 GB
+    # cùng chip GA100). Tên đầy đủ vẫn ghi trong phien.jsonl (moi_truong.gpu).
+    gpu = NG.ho_gpu(torch.cuda.get_device_name(0)) if torch.cuda.is_available() else "cpu"
+    return {"torch": torch.__version__, "cuda": torch.version.cuda, "ho_gpu": gpu,
+            "attn_implementation": kieu_attention(model),
             "transformers": tt_moi_truong.get("transformers"), "tokenizers": tt_moi_truong.get("tokenizers"),
             "goi_flash-linear-attention": tt_moi_truong.get("goi_flash-linear-attention"),
             "goi_causal-conv1d": tt_moi_truong.get("goi_causal-conv1d"),
@@ -469,7 +515,8 @@ def _chay(a, dac_ta, ke, cau, h, revision, ke_hoach, ma_nguon, kho, meta_kh=None
     gc = cau_hinh_hieu_luc(a.mo_hinh or dac_ta.hf_id, revision, tuple(eos), tok.pad_token_id)
     tt_moi_truong = NG.thong_tin_moi_truong()
     mt = _moi_truong_so_hoc(model, tt_moi_truong)
-    dc3 = doi_chieu_buoc3(meta_kh, tt_moi_truong, backend_lop_tuyen_tinh(model), tt_mo_hinh["commit_hf"], a.thu)
+    dc3 = doi_chieu_buoc3(meta_kh, tt_moi_truong, backend_lop_tuyen_tinh(model), tt_mo_hinh["commit_hf"], a.thu,
+                          attn=kieu_attention(model), attn_dac_ta=dac_ta.attn_implementation)
     mt_ok, mt_khac = kho.kiem_moi_truong(mt, cho_phep_doi=a.cho_phep_doi_moi_truong)
     so_phien = kho.ghi_phien({
         "luc": time.strftime("%Y-%m-%d %H:%M:%S"), "trang_thai_mo": trang_thai, "moi_truong": tt_moi_truong,
@@ -491,6 +538,8 @@ def _chay(a, dac_ta, ke, cau, h, revision, ke_hoach, ma_nguon, kho, meta_kh=None
             "chứng nhận đúng backend và phiên bản đã dùng: dựng lại môi trường như bước 3, hoặc chạy lại "
             "buoc3_kiem_hook trên máy này rồi dùng thư mục kết quả mới cho --kiem_hook.")
         return 4
+    if dc3.get("attn_suy_ra"):
+        log(f"CHÚ Ý: lượt kiểm hook không ghi kiểu attention; suy ra theo ngoại lệ đã duyệt: {dc3['attn_suy_ra']}.")
     if dc3["gpu_khac"]:
         log(f"CHÚ Ý: GPU khác lượt kiểm hook bước 3 ({dc3['gpu_khac']}); chỉ ghi lại (backend và gói đã trùng).")
     if not mt_ok:

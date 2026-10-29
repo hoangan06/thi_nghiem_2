@@ -9,10 +9,15 @@ Kiểm (Nhap, Trình tự chạy bước 3; Ghi chú kỹ thuật hai mô hình 
    của đặc tả và với layer_types của config; Gemma 4: 48 giá trị layer_scalar; embedding đầu vào.
 3. Khối sau câu hỏi trên tokenizer đã nạp (như kiem_truoc, chạy lại cho chắc).
 4. Bộ đếm vị trí của hook: mỗi lượt forward đi qua embedding đầu vào đúng một lần (tn2.buoc3.nap_kiem).
-5. Sinh thử không gắn hook trên 8 câu đầu của mỗi tập dựng (32 câu, cả hai ngôn ngữ), 256 token: đếm câu còn
+5. Quét attention theo độ dài (sửa sau kết quả bước 3; Ân duyệt 29/10/2026; tn2.kiem_attention): kiểu attention
+   đang dùng so với sdpa backend MATH, bf16, dạng một chuỗi (m = 2…320), lô đệm trái ở các độ dài ≡ 1 (mod 32), bốn
+   lô thật của bước 4 (40 câu hiệu chỉnh mỗi tập × ngôn ngữ) và một phép có KV cache. "khong_dat" (lệch > 5 logit)
+   thì 4b không đạt; "can_kiem" (2–5 logit) chỉ ghi CHÚ Ý, phép quét float32 ở 4d quyết. Kiểu attention thực dùng
+   phải đúng đặc tả.
+6. Sinh thử không gắn hook trên 8 câu đầu của mỗi tập dựng (32 câu, cả hai ngôn ngữ), 256 token: đếm câu còn
    rò khối thinking (Nhap Dựng hướng điểm 5) và câu dừng ở token kết thúc. Câu trả lời lưu ra sinh_thu.jsonl;
    không tính tỉ lệ từ chối (không dùng để phân tích).
-Mã thoát: 0 đạt; 1 có phép kiểm không đạt (xem nap_kiem.json); 3 mô hình không nằm trọn trên một GPU.
+Mã thoát: 0 đạt; 1 có phép kiểm không đạt (kể cả quét attention 'khong_dat') (xem nap_kiem.json); 3 mô hình không nằm trọn trên một GPU.
 Rò thinking vượt 5 % số câu sinh thử (cùng ngưỡng điều kiện 3 của Nhap 7.7) tính là không đạt; không câu sinh
 thử nào dừng ở token kết thúc chính (Qwen3.5 <|im_end|>, Gemma 4 <turn|>) cũng tính là không đạt (cần xem lại).
 """
@@ -29,12 +34,26 @@ import torch
 from tn2 import nguon_goc as NG
 from tn2.buoc3.nap_kiem import dem_ro_thinking, kiem_cau_truc, kiem_goi_embedding, kiem_khoi_tokenizer
 from tn2.du_lieu import nap_tap_dung
-from tn2.mo_hinh import backend_lop_tuyen_tinh, eos_tu_mo_hinh, nap_mo_hinh, phan_bo_thiet_bi
+from tn2.khuon import ma_hoa
+from tn2 import kiem_attention as KA
+from tn2.mo_hinh import backend_lop_tuyen_tinh, eos_tu_mo_hinh, kieu_attention, nap_mo_hinh, phan_bo_thiet_bi
 from tn2.sinh import sinh_theo_lo
 
 NGUONG_RO_THINKING = 0.05
 SO_CAU_SINH_THU = 8
 MAX_NEW_TOKENS = 256      # Nhap 3.5
+
+
+def _lo_buoc4(tok, dac_ta) -> dict[str, list[list[int]]]:
+    """Bốn lô thật của bước 4 (40 câu hiệu chỉnh mỗi tập × ngôn ngữ, cùng cách mã hoá như bước 4)."""
+    from tn2.tap_test import doc_chia_tap, tap_con
+    chia = doc_chia_tap()
+    ra = {}
+    for t in ("D_plain_test", "D_harm_test"):
+        cau = tap_con(t, "hieu_chinh", chia)
+        for ng in ("en", "vi"):
+            ra[f"{t}_{ng}"] = ma_hoa(tok, [c[ng] for c in cau], dac_ta).ids_rieng
+    return ra
 
 
 def main(argv=None) -> int:
@@ -46,9 +65,11 @@ def main(argv=None) -> int:
     p.add_argument("--ten_luot", default=None)
     p.add_argument("--max_new_tokens", type=int, default=MAX_NEW_TOKENS)
     p.add_argument("--so_cau_sinh_thu", type=int, default=SO_CAU_SINH_THU)
+    p.add_argument("--quet_den", type=int, default=KA.M_TOI_DA, help="độ dài lớn nhất của phép quét attention")
     a = p.parse_args(argv)
     dac_ta = chon_dac_ta(a.mo_hinh_dac_ta)
-    chinh_thuc = a.max_new_tokens == MAX_NEW_TOKENS and a.so_cau_sinh_thu == SO_CAU_SINH_THU
+    chinh_thuc = (a.max_new_tokens == MAX_NEW_TOKENS and a.so_cau_sinh_thu == SO_CAU_SINH_THU
+                  and a.quet_den == KA.M_TOI_DA)
     thu_muc = NG.thu_muc_moi(f"{a.ra}/{dac_ta.ten}", a.ten_luot or ten_luot_mac_dinh("nap_kiem"))
     log = NhatKy(thu_muc / "nhat_ky.txt")
     bat_dau = time.time()
@@ -84,6 +105,22 @@ def main(argv=None) -> int:
     ket["goi_embedding"] = ge
     log(f"Bộ đếm vị trí: {ge} → đạt {ge['dat']}")
 
+    # Quét attention theo độ dài (bf16) — trước sinh thử để dừng sớm.
+    dat_attn_dac_ta = (dac_ta.attn_implementation is None or kieu_attention(model) == dac_ta.attn_implementation)
+    try:
+        X = KA.chuoi_quet(tok, dac_ta, tap.harmless_en + tap.harm_en, a.quet_den + 64)
+        lo_thuc = _lo_buoc4(tok, dac_ta)
+        qa = KA.quet_attention(model, X, tok.pad_token_id, fp32=False, m_toi_da=a.quet_den, lo_thuc=lo_thuc)
+    except Exception as e:                                          # noqa: BLE001
+        qa = {"trang_thai": "khong_dat", "loi": f"{type(e).__name__}: {e}"}
+    ket["quet_attention"] = qa
+    ket["kieu_attention"] = {"dang_dung": kieu_attention(model), "dac_ta": dac_ta.attn_implementation,
+                             "dat": dat_attn_dac_ta}
+    log("Quét attention: " + (KA.tom_tat(qa) if "loi" not in qa else f"LỖI {qa['loi']} → khong_dat"))
+    if qa["trang_thai"] == "can_kiem":
+        log("CHÚ Ý: lệch attention trong vùng 'cần kiểm' (2–5 logit). Đọc theo luật Ân duyệt 29/10/2026 "
+            "(docs/RUNBOOK_LUOT_THUE_TIEP.md, mục 4, 5): phép quét float32 ở 4d quyết; không tự nới ngưỡng.")
+
     n = a.so_cau_sinh_thu
     cau, nhan = [], []
     for ten in ("harm_en", "harm_vi", "harmless_en", "harmless_vi"):
@@ -114,12 +151,16 @@ def main(argv=None) -> int:
     # Không đòi mọi câu (câu dài có thể chưa xong). Không câu nào dừng ở id chính → xem lại danh sách eos và vài câu
     # trong sinh_thu.jsonl; đạt cũng chưa chứng minh mọi id trong danh sách đều được nhận.
     dat_eos = theo_eos.get(str(eos_chinh), 0) > 0
+    dat_quet = qa["trang_thai"] != "khong_dat"
     ket["dat_thanh_phan"] = {"cau_truc": ct["dat"], "khoi_sau_cau_hoi": khoi["dat"], "goi_embedding": ge["dat"],
-                             "ro_thinking_toi_da_5_phan_tram": dat_ro, "co_cau_cham_eos_chinh": dat_eos}
-    ket["dat"] = bool(ct["dat"] and khoi["dat"] and ge["dat"] and dat_ro and dat_eos)
+                             "ro_thinking_toi_da_5_phan_tram": dat_ro, "co_cau_cham_eos_chinh": dat_eos,
+                             "kieu_attention_dung_dac_ta": dat_attn_dac_ta, "quet_attention_khong_loi_tho": dat_quet}
+    ket["dat"] = bool(ct["dat"] and khoi["dat"] and ge["dat"] and dat_ro and dat_eos and dat_attn_dac_ta
+                      and dat_quet)
     NG.ghi_json(thu_muc / "nap_kiem.json", ket)
     log(f"ĐẠT: {ket['dat']} (cấu trúc {ct['dat']}, khối {khoi['dat']}, bộ đếm vị trí {ge['dat']}, "
-        f"rò thinking ≤ 5 % {dat_ro}, có câu dừng ở token kết thúc chính {dat_eos}; theo id {theo_eos}). "
+        f"rò thinking ≤ 5 % {dat_ro}, có câu dừng ở token kết thúc chính {dat_eos}; theo id {theo_eos}; "
+        f"attention đúng đặc tả {dat_attn_dac_ta}; quét attention {qa['trang_thai']}). "
         f"Xong sau {(time.time() - bat_dau) / 60:.1f} phút.")
     return 0 if ket["dat"] else 1
 
